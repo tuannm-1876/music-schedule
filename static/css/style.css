@@ -1,0 +1,441 @@
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    font-family: Arial, sans-serif;
+}
+
+h1, h2, h3 {
+    color: #333;
+    margin-bottom: 20px;
+}
+
+h1 {
+    text-align: center;
+    border-bottom: 2px solid #eee;
+    padding-bottom: 10px;
+}
+
+/* Player Controls */
+.player-controls {
+    background: #f8f9fa;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 30px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.player-controls.hidden {
+    display: none;
+}
+
+.now-playing {
+    text-align: center;
+    margin-bottom: 15px;
+    font-size: 1.1em;
+}
+
+/* Progress Bar */
+.progress-bar-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 15px 0;
+}
+
+.progress-bar {
+    flex: 1;
+    height: 6px;
+    background: #ddd;
+    border-radius: 3px;
+    cursor: pointer;
+    position: relative;
+}
+
+.progress {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    background: #4CAF50;
+    border-radius: 3px;
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+/* Volume Controls */
+.volume-controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin: 15px 0;
+}
+
+.volume-controls i {
+    color: #666;
+    width: 20px;
+    text-align: center;
+}
+
+#volume-slider {
+    width: 100px;
+    height: 4px;
+    -webkit-appearance: none;
+    background: #ddd;
+    border-radius: 2px;
+    outline: none;
+}
+
+#volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    background: #4CAF50;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: background .2s;
+}
+
+#volume-slider::-webkit-slider-thumb:hover {
+    background: #45a049;
+}
+
+#volume-slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background: #4CAF50;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: background .2s;
+}
+
+#volume-slider::-moz-range-thumb:hover {
+    background: #45a049;
+}
+
+/* Playback Controls */
+.playback-controls {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    margin-top: 15px;
+}
+
+.playback-controls button {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: none;
+    background: #4CAF50;
+    color: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .2s;
+}
+
+.playback-controls button:hover {
+    background: #45a049;
+}
+
+.playback-controls .stop-btn {
+    background: #f44336;
+}
+
+.playback-controls .stop-btn:hover {
+    background: #da190b;
+}
+
+/* Next Schedule */
+.next-schedule {
+    background-color: #e3f2fd;
+    padding: 15px;
+    border-radius: 8px;
+    margin-bottom: 30px;
+}
+
+.next-schedule p {
+    margin: 5px 0;
+    font-size: 1.1em;
+}
+
+/* Schedule Management */
+.schedule-management {
+    margin-bottom: 30px;
+}
+
+.add-schedule {
+    margin-bottom: 20px;
+}
+
+/* Styles for the form used to add new schedules */
+.schedule-form {
+    display: flex;
+    flex-direction: column;
+    align-items: center; /* Center children horizontally */
+    gap: 15px;
+    padding: 20px;
+    background-color: #f8f9fa;
+    border: 1px solid #eee;
+    border-radius: 6px;
+    max-width: 600px; /* Constrain width */
+    margin: 0 auto 20px auto; /* Center the form container */
+}
+
+/* Container for the time input field */
+.time-input {
+    display: flex;
+    gap: 10px;
+    width: 100%; /* Take full width of the form */
+    justify-content: center; /* Center the input field within this div */
+}
+
+/* Styling for the time input itself */
+.time-input input[type="time"] {
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    flex-grow: 0; /* Don't allow it to grow excessively */
+    max-width: 200px; /* Give it a reasonable max width */
+}
+
+/* Container for weekday checkboxes */
+.weekday-selection {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center; /* Center the labels */
+    gap: 8px;
+    padding: 10px;
+    background: #f0f0f0;
+    border-radius: 4px;
+    width: 100%; /* Take full width of the form */
+}
+
+.weekday-selection label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 15px;
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.2s;
+    font-size: 0.9em;
+}
+
+.weekday-selection label:hover {
+    background: #e8e8e8;
+}
+
+.weekday-selection input[type="checkbox"]:checked + label {
+    background: #4CAF50;
+    color: white;
+    border-color: #4CAF50;
+}
+
+.weekdays { /* This applies to the display in the list, not the form */
+    display: block;
+    font-size: 0.8em;
+    color: #666;
+    margin-top: 4px;
+}
+
+.schedule-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.schedule-item {
+    display: flex;
+    justify-content: space-between; /* Keep info left, controls right */
+    align-items: center; /* Vertically center items */
+    padding: 12px 15px; /* Adjust padding slightly */
+    background-color: #f8f9fa;
+    border: 1px solid #eee; /* Add a subtle border */
+    border-radius: 6px; /* Slightly rounder corners */
+    transition: background-color 0.2s ease; /* Add hover effect */
+}
+
+.schedule-item:hover {
+    background-color: #f1f3f5; /* Lighten background on hover */
+}
+
+.schedule-item.disabled {
+    opacity: 0.6;
+}
+
+.schedule-info {
+    display: flex;
+    align-items: center; /* Align time and weekdays vertically */
+    gap: 15px; /* Add space between time and weekdays */
+    flex-grow: 1; /* Allow info to take available space */
+}
+
+.schedule-info .time {
+    font-size: 1.1em;
+    font-weight: 500;
+    color: #333;
+    min-width: 60px; /* Ensure consistent width for time */
+    text-align: left;
+}
+
+.schedule-info .weekdays {
+    color: #555; /* Slightly darker text */
+    font-size: 0.9em;
+    margin-top: 0; /* Remove top margin as it's now inline */
+    flex-shrink: 0; /* Prevent weekdays from shrinking too much */
+}
+
+.schedule-controls {
+    display: flex;
+    gap: 10px;
+}
+
+/* Music Forms */
+.add-music {
+    margin: 30px 0;
+}
+
+.youtube-form, .upload-form {
+    background-color: #f8f9fa;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+}
+
+/* General form styling - applies to youtube/upload forms */
+/* Exclude .schedule-form from this general rule */
+form:not(.add-schedule) {
+    display: flex;
+    gap: 10px;
+}
+
+input[type="text"],
+input[type="file"] {
+    flex: 1;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+/* General button styling */
+button {
+    background-color: #4CAF50; /* Default green */
+    color: white;
+    border: none;
+    padding: 10px 20px; /* Default padding */
+    cursor: pointer;
+    border-radius: 4px;
+    font-size: 14px;
+    transition: background-color 0.2s ease;
+}
+
+/* Specific styling for the submit button in the schedule form */
+.schedule-form button[type="submit"] {
+    padding: 10px 25px; /* Override padding for this specific button */
+    /* align-self: center; /* Already centered by .schedule-form's align-items */
+}
+
+/* General button hover */
+button:hover {
+    background-color: #45a049;
+}
+
+/* Disabled button style */
+button:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+}
+
+/* Playlist */
+.song-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.song-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px;
+    background-color: #f8f9fa;
+    border-radius: 4px;
+}
+
+.song-info {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.song-title {
+    font-weight: bold;
+}
+
+.song-source {
+    color: #666;
+    font-size: 0.9em;
+}
+
+.song-duration {
+    color: #666;
+    font-size: 0.9em;
+    margin-left: auto;
+}
+
+.song-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.priority-input {
+    width: 60px;
+    padding: 5px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+/* Links styled as buttons */
+.toggle-btn, .delete-btn {
+    color: white;
+    text-decoration: none;
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    transition: background-color 0.2s ease;
+}
+
+.toggle-btn {
+    background-color: #2196F3;
+}
+
+.toggle-btn:hover {
+    background-color: #1976D2;
+}
+
+.delete-btn {
+    background-color: #f44336;
+}
+
+.delete-btn:hover {
+    background-color: #da190b;
+}
+
+/* General */
+.controls {
+    margin-top: 30px;
+    text-align: center;
+}
+
+.hidden {
+    display: none;
+}
