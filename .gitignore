@@ -1,0 +1,4 @@
+venv/
+music/
+instance/music.db
+config/playlist.json

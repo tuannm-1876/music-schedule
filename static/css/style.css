@@ -1,28 +1,92 @@
+:root {
+    --primary-color: #4CAF50;
+    --primary-hover: #45a049;
+    --error-color: #f44336;
+    --error-hover: #da190b;
+    --info-color: #2196F3;
+    --info-hover: #1976D2;
+    --text-primary: #333;
+    --text-secondary: #666;
+    --bg-primary: #f8f9fa;
+    --bg-secondary: #f1f3f5;
+    --border-color: #ddd;
+    --transition-speed: 0.2s;
+    --border-radius: 8px;
+    --shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --primary-color: #66bb6a;
+        --primary-hover: #81c784;
+        --error-color: #ef5350;
+        --error-hover: #e57373;
+        --info-color: #42a5f5;
+        --info-hover: #64b5f6;
+        --text-primary: #e0e0e0;
+        --text-secondary: #bdbdbd;
+        --bg-primary: #424242;
+        --bg-secondary: #515151;
+        --border-color: #616161;
+    }
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6;
+    color: var(--text-primary);
+    background-color: #fff;
+    transition: background-color var(--transition-speed) ease;
+}
+
+@media (prefers-color-scheme: dark) {
+    body {
+        background-color: #303030;
+    }
+}
+
 .container {
     max-width: 800px;
     margin: 0 auto;
     padding: 20px;
-    font-family: Arial, sans-serif;
 }
 
+/* Typography */
 h1, h2, h3 {
-    color: #333;
+    color: var(--text-primary);
     margin-bottom: 20px;
+    font-weight: 600;
 }
 
 h1 {
     text-align: center;
-    border-bottom: 2px solid #eee;
+    border-bottom: 2px solid var(--border-color);
     padding-bottom: 10px;
+    font-size: 2em;
+}
+
+h2 {
+    font-size: 1.5em;
+}
+
+h3 {
+    font-size: 1.2em;
 }
 
 /* Player Controls */
 .player-controls {
-    background: #f8f9fa;
+    background: var(--bg-primary);
     padding: 20px;
-    border-radius: 8px;
+    border-radius: var(--border-radius);
     margin-bottom: 30px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    box-shadow: var(--shadow);
+    transition: all var(--transition-speed) ease;
 }
 
 .player-controls.hidden {
@@ -46,10 +110,11 @@ h1 {
 .progress-bar {
     flex: 1;
     height: 6px;
-    background: #ddd;
+    background: var(--border-color);
     border-radius: 3px;
     cursor: pointer;
     position: relative;
+    overflow: hidden;
 }
 
 .progress {
@@ -57,7 +122,7 @@ h1 {
     left: 0;
     top: 0;
     height: 100%;
-    background: #4CAF50;
+    background: var(--primary-color);
     border-radius: 3px;
     width: 0%;
     transition: width 0.3s ease;
@@ -73,7 +138,7 @@ h1 {
 }
 
 .volume-controls i {
-    color: #666;
+    color: var(--text-secondary);
     width: 20px;
     text-align: center;
 }
@@ -82,7 +147,7 @@ h1 {
     width: 100px;
     height: 4px;
     -webkit-appearance: none;
-    background: #ddd;
+    background: var(--border-color);
     border-radius: 2px;
     outline: none;
 }
@@ -91,28 +156,25 @@ h1 {
     -webkit-appearance: none;
     width: 14px;
     height: 14px;
-    background: #4CAF50;
+    background: var(--primary-color);
     border-radius: 50%;
     cursor: pointer;
-    transition: background .2s;
-}
-
-#volume-slider::-webkit-slider-thumb:hover {
-    background: #45a049;
+    transition: background var(--transition-speed);
 }
 
 #volume-slider::-moz-range-thumb {
     width: 14px;
     height: 14px;
-    background: #4CAF50;
+    background: var(--primary-color);
     border: none;
     border-radius: 50%;
     cursor: pointer;
-    transition: background .2s;
+    transition: background var(--transition-speed);
 }
 
-#volume-slider::-moz-range-thumb:hover {
-    background: #45a049;
+#volume-slider:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--info-color);
 }
 
 /* Playback Controls */
@@ -128,33 +190,40 @@ h1 {
     height: 40px;
     border-radius: 50%;
     border: none;
-    background: #4CAF50;
+    background: var(--primary-color);
     color: white;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: background .2s;
+    transition: all var(--transition-speed);
 }
 
 .playback-controls button:hover {
-    background: #45a049;
+    background: var(--primary-hover);
+    transform: scale(1.05);
+}
+
+.playback-controls button:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--info-color);
 }
 
 .playback-controls .stop-btn {
-    background: #f44336;
+    background: var(--error-color);
 }
 
 .playback-controls .stop-btn:hover {
-    background: #da190b;
+    background: var(--error-hover);
 }
 
 /* Next Schedule */
 .next-schedule {
-    background-color: #e3f2fd;
+    background-color: var(--bg-primary);
     padding: 15px;
-    border-radius: 8px;
+    border-radius: var(--border-radius);
     margin-bottom: 30px;
+    border: 1px solid var(--border-color);
 }
 
 .next-schedule p {
@@ -171,47 +240,44 @@ h1 {
     margin-bottom: 20px;
 }
 
-/* Styles for the form used to add new schedules */
 .schedule-form {
     display: flex;
     flex-direction: column;
-    align-items: center; /* Center children horizontally */
+    align-items: center;
     gap: 15px;
     padding: 20px;
-    background-color: #f8f9fa;
-    border: 1px solid #eee;
-    border-radius: 6px;
-    max-width: 600px; /* Constrain width */
-    margin: 0 auto 20px auto; /* Center the form container */
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    max-width: 600px;
+    margin: 0 auto 20px auto;
 }
 
-/* Container for the time input field */
 .time-input {
     display: flex;
     gap: 10px;
-    width: 100%; /* Take full width of the form */
-    justify-content: center; /* Center the input field within this div */
+    width: 100%;
+    justify-content: center;
 }
 
-/* Styling for the time input itself */
 .time-input input[type="time"] {
     padding: 8px;
-    border: 1px solid #ddd;
+    border: 1px solid var(--border-color);
     border-radius: 4px;
-    flex-grow: 0; /* Don't allow it to grow excessively */
-    max-width: 200px; /* Give it a reasonable max width */
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    max-width: 200px;
 }
 
-/* Container for weekday checkboxes */
 .weekday-selection {
     display: flex;
     flex-wrap: wrap;
-    justify-content: center; /* Center the labels */
+    justify-content: center;
     gap: 8px;
     padding: 10px;
-    background: #f0f0f0;
+    background: var(--bg-secondary);
     border-radius: 4px;
-    width: 100%; /* Take full width of the form */
+    width: 100%;
 }
 
 .weekday-selection label {
@@ -219,30 +285,32 @@ h1 {
     align-items: center;
     gap: 5px;
     padding: 5px 10px;
-    background: white;
-    border: 1px solid #ddd;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: 15px;
     cursor: pointer;
     user-select: none;
-    transition: all 0.2s;
+    transition: all var(--transition-speed);
     font-size: 0.9em;
 }
 
 .weekday-selection label:hover {
-    background: #e8e8e8;
+    background: var(--bg-secondary);
+}
+
+.weekday-selection input[type="checkbox"] {
+    position: absolute;
+    opacity: 0;
 }
 
 .weekday-selection input[type="checkbox"]:checked + label {
-    background: #4CAF50;
+    background: var(--primary-color);
     color: white;
-    border-color: #4CAF50;
+    border-color: var(--primary-color);
 }
 
-.weekdays { /* This applies to the display in the list, not the form */
-    display: block;
-    font-size: 0.8em;
-    color: #666;
-    margin-top: 4px;
+.weekday-selection input[type="checkbox"]:focus + label {
+    box-shadow: 0 0 0 2px var(--info-color);
 }
 
 .schedule-list {
@@ -253,17 +321,18 @@ h1 {
 
 .schedule-item {
     display: flex;
-    justify-content: space-between; /* Keep info left, controls right */
-    align-items: center; /* Vertically center items */
-    padding: 12px 15px; /* Adjust padding slightly */
-    background-color: #f8f9fa;
-    border: 1px solid #eee; /* Add a subtle border */
-    border-radius: 6px; /* Slightly rounder corners */
-    transition: background-color 0.2s ease; /* Add hover effect */
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 15px;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    transition: all var(--transition-speed);
 }
 
 .schedule-item:hover {
-    background-color: #f1f3f5; /* Lighten background on hover */
+    background-color: var(--bg-secondary);
+    transform: translateX(2px);
 }
 
 .schedule-item.disabled {
@@ -272,24 +341,24 @@ h1 {
 
 .schedule-info {
     display: flex;
-    align-items: center; /* Align time and weekdays vertically */
-    gap: 15px; /* Add space between time and weekdays */
-    flex-grow: 1; /* Allow info to take available space */
+    align-items: center;
+    gap: 15px;
+    flex-grow: 1;
 }
 
 .schedule-info .time {
     font-size: 1.1em;
     font-weight: 500;
-    color: #333;
-    min-width: 60px; /* Ensure consistent width for time */
+    color: var(--text-primary);
+    min-width: 60px;
     text-align: left;
 }
 
 .schedule-info .weekdays {
-    color: #555; /* Slightly darker text */
+    color: var(--text-secondary);
     font-size: 0.9em;
-    margin-top: 0; /* Remove top margin as it's now inline */
-    flex-shrink: 0; /* Prevent weekdays from shrinking too much */
+    margin-top: 0;
+    flex-shrink: 0;
 }
 
 .schedule-controls {
@@ -303,14 +372,13 @@ h1 {
 }
 
 .youtube-form, .upload-form {
-    background-color: #f8f9fa;
+    background-color: var(--bg-primary);
     padding: 20px;
-    border-radius: 8px;
+    border-radius: var(--border-radius);
     margin-bottom: 20px;
+    border: 1px solid var(--border-color);
 }
 
-/* General form styling - applies to youtube/upload forms */
-/* Exclude .schedule-form from this general rule */
 form:not(.add-schedule) {
     display: flex;
     gap: 10px;
@@ -320,37 +388,45 @@ input[type="text"],
 input[type="file"] {
     flex: 1;
     padding: 10px;
-    border: 1px solid #ddd;
+    border: 1px solid var(--border-color);
     border-radius: 4px;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
 }
 
-/* General button styling */
+input[type="text"]:focus,
+input[type="file"]:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--info-color);
+    border-color: var(--info-color);
+}
+
+/* Buttons */
 button {
-    background-color: #4CAF50; /* Default green */
+    background-color: var(--primary-color);
     color: white;
     border: none;
-    padding: 10px 20px; /* Default padding */
+    padding: 10px 20px;
     cursor: pointer;
     border-radius: 4px;
     font-size: 14px;
-    transition: background-color 0.2s ease;
+    transition: all var(--transition-speed);
 }
 
-/* Specific styling for the submit button in the schedule form */
-.schedule-form button[type="submit"] {
-    padding: 10px 25px; /* Override padding for this specific button */
-    /* align-self: center; /* Already centered by .schedule-form's align-items */
+button:hover:not(:disabled) {
+    background-color: var(--primary-hover);
+    transform: translateY(-1px);
 }
 
-/* General button hover */
-button:hover {
-    background-color: #45a049;
+button:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--info-color);
 }
 
-/* Disabled button style */
 button:disabled {
-    background-color: #cccccc;
+    background-color: var(--border-color);
     cursor: not-allowed;
+    transform: none;
 }
 
 /* Playlist */
@@ -365,8 +441,15 @@ button:disabled {
     justify-content: space-between;
     align-items: center;
     padding: 15px;
-    background-color: #f8f9fa;
-    border-radius: 4px;
+    background-color: var(--bg-primary);
+    border-radius: var(--border-radius);
+    border: 1px solid var(--border-color);
+    transition: all var(--transition-speed);
+}
+
+.song-item:hover {
+    background-color: var(--bg-secondary);
+    transform: translateX(2px);
 }
 
 .song-info {
@@ -377,16 +460,17 @@ button:disabled {
 }
 
 .song-title {
-    font-weight: bold;
+    font-weight: 600;
+    color: var(--text-primary);
 }
 
 .song-source {
-    color: #666;
+    color: var(--text-secondary);
     font-size: 0.9em;
 }
 
 .song-duration {
-    color: #666;
+    color: var(--text-secondary);
     font-size: 0.9em;
     margin-left: auto;
 }
@@ -400,42 +484,143 @@ button:disabled {
 .priority-input {
     width: 60px;
     padding: 5px;
-    border: 1px solid #ddd;
+    border: 1px solid var(--border-color);
     border-radius: 4px;
-}
-
-/* Links styled as buttons */
-.toggle-btn, .delete-btn {
-    color: white;
-    text-decoration: none;
-    padding: 5px 10px;
-    border-radius: 4px;
-    font-size: 12px;
-    transition: background-color 0.2s ease;
-}
-
-.toggle-btn {
-    background-color: #2196F3;
-}
-
-.toggle-btn:hover {
-    background-color: #1976D2;
-}
-
-.delete-btn {
-    background-color: #f44336;
-}
-
-.delete-btn:hover {
-    background-color: #da190b;
-}
-
-/* General */
-.controls {
-    margin-top: 30px;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
     text-align: center;
 }
 
+.priority-input:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--info-color);
+    border-color: var(--info-color);
+}
+
+/* Action Buttons */
+.toggle-btn, .delete-btn {
+    color: white;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    transition: all var(--transition-speed);
+    cursor: pointer;
+}
+
+.toggle-btn {
+    background-color: var(--info-color);
+}
+
+.toggle-btn:hover {
+    background-color: var(--info-hover);
+}
+
+.delete-btn {
+    background-color: var(--error-color);
+}
+
+.delete-btn:hover {
+    background-color: var(--error-hover);
+}
+
+/* Error Messages */
+.error-message {
+    color: var(--error-color);
+    font-size: 0.9em;
+    margin-top: 5px;
+    opacity: 0;
+    transition: opacity var(--transition-speed);
+}
+
+.error-message.visible {
+    opacity: 1;
+}
+
+/* Loading States */
+button.loading {
+    position: relative;
+    color: transparent;
+}
+
+button.loading::after {
+    content: "";
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    border: 2px solid white;
+    border-radius: 50%;
+    border-top-color: transparent;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Responsive Design */
+@media (max-width: 600px) {
+    .container {
+        padding: 10px;
+    }
+
+    form:not(.add-schedule) {
+        flex-direction: column;
+    }
+
+    .song-item {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .song-info {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .song-controls {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .schedule-item {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .schedule-controls {
+        width: 100%;
+        justify-content: space-between;
+    }
+}
+
+/* Accessibility */
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation: none !important;
+        transition: none !important;
+    }
+}
+
 .hidden {
-    display: none;
+    display: none !important;
+}
+
+/* Focus Visible */
+:focus-visible {
+    outline: 2px solid var(--info-color);
+    outline-offset: 2px;
+}
+
+/* Screen Reader Only */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
 }

@@ -8,3 +8,5 @@ mutagen==1.47.0
 Flask-SocketIO
 eventlet
 pygame
+Flask-CORS
+Flask-WTF
