@@ -15,7 +15,14 @@ function fetchWithCsrf(url, options = {}) {
             'Accept': 'application/json'
         }
     };
-    return fetch(url, { ...defaultOptions, ...options });
+    
+    // Properly merge headers
+    const mergedOptions = { ...defaultOptions, ...options };
+    if (options.headers) {
+        mergedOptions.headers = { ...defaultOptions.headers, ...options.headers };
+    }
+    
+    return fetch(url, mergedOptions);
 }
 
 // Error handling utility
@@ -218,6 +225,8 @@ function handleForm(formId, url, successCallback) {
 
 document.addEventListener('DOMContentLoaded', function () {
     socket = io();
+    // Initialize drag-and-drop functionality
+    initDragAndDrop();
     const progress = document.getElementById('song-progress');
     const songTitle = document.getElementById('current-song-title');
     if (progress && songTitle.textContent) {
@@ -235,13 +244,38 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     socket.on('playback_update', function (data) {
-        if (currentSongId) {
+        if (currentSongId && data.current_song_id) {
             updateProgress(data.position, data.duration, data.volume);
             if (isPlaying !== data.is_playing) {
                 isPlaying = data.is_playing;
                 updatePlayPauseButton(isPlaying);
             }
+        } else if (!data.current_song_id && currentSongId) {
+            // Song has finished or been reset
+            currentSongId = null;
+            currentSongDuration = 0;
+            isPlaying = false;
+            
+            const elements = {
+                duration: document.getElementById('duration'),
+                currentTime: document.getElementById('current-time'),
+                progress: document.getElementById('song-progress')
+            };
+            
+            if (elements.duration) elements.duration.textContent = '0:00';
+            if (elements.currentTime) elements.currentTime.textContent = '0:00';
+            if (elements.progress) elements.progress.style.width = '0%';
+            
+            updatePlayPauseButton(false);
         }
+    });
+
+    socket.on('song_finished', function(data) {
+        console.log('Song finished:', data.message);
+        // Reload the page to get updated playlist order
+        setTimeout(() => {
+            window.location.reload();
+        }, 1000);
     });
 
     socket.on('volume_updated', function (data) {
@@ -387,6 +421,145 @@ document.addEventListener('DOMContentLoaded', function () {
             }, 500);
         });
     });
+
+    // Drag and drop for song reordering
+    function initDragAndDrop() {
+        const songList = document.getElementById('sortable-song-list');
+        if (!songList) return;
+        
+        let draggedItem = null;
+        
+        // Initialize all song items
+        const songItems = songList.querySelectorAll('.song-item');
+        songItems.forEach(item => {
+            // Set up drag start
+            item.addEventListener('dragstart', function(e) {
+                draggedItem = this;
+                setTimeout(() => this.classList.add('dragging'), 0);
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/html', this.innerHTML);
+            });
+            
+            // Set up drag end
+            item.addEventListener('dragend', function() {
+                this.classList.remove('dragging');
+                draggedItem = null;
+                
+                // Update positions and save to server
+                updateSongPositions();
+            });
+            
+            // Handle drag over
+            item.addEventListener('dragover', function(e) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                return false;
+            });
+            
+            // Highlight drop area
+            item.addEventListener('dragenter', function(e) {
+                e.preventDefault();
+                if (draggedItem !== this) {
+                    this.classList.add('drag-over');
+                }
+            });
+            
+            // Remove highlight
+            item.addEventListener('dragleave', function() {
+                this.classList.remove('drag-over');
+            });
+            
+            // Handle drop
+            item.addEventListener('drop', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                this.classList.remove('drag-over');
+                
+                // Don't do anything if dropping on the original item
+                if (draggedItem === this) return false;
+                
+                // Get positions 
+                const list = Array.from(songList.children);
+                const fromIndex = list.indexOf(draggedItem);
+                const toIndex = list.indexOf(this);
+                
+                // Move element in the DOM
+                if (fromIndex < toIndex) {
+                    songList.insertBefore(draggedItem, this.nextElementSibling);
+                } else {
+                    songList.insertBefore(draggedItem, this);
+                }
+                
+                return false;
+            });
+        });
+    }
+
+    // Update song positions after drag and drop
+    function updateSongPositions() {
+        const songList = document.getElementById('sortable-song-list');
+        if (!songList) return;
+        
+        // Get all songs and their current order
+        const songItems = Array.from(songList.querySelectorAll('.song-item'));
+        const songOrder = songItems.map((item, index) => ({
+            id: parseInt(item.dataset.id),
+            position: index
+        }));
+        
+        // Update the data-position attribute
+        songItems.forEach((item, index) => {
+            item.dataset.position = index;
+        });
+        // Create a notification to indicate status
+        const notification = document.createElement('div');
+        notification.className = 'song-order-notification';
+        notification.textContent = 'Saving order...';
+        notification.style.position = 'fixed';
+        notification.style.bottom = '20px';
+        notification.style.right = '20px';
+        notification.style.padding = '10px 20px';
+        notification.style.backgroundColor = 'rgba(33, 150, 243, 0.8)';
+        notification.style.color = 'white';
+        notification.style.borderRadius = '4px';
+        notification.style.zIndex = '1000';
+        document.body.appendChild(notification);
+    
+    // Send the new order to the server
+    fetchWithCsrf('/update-song-order', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ songs: songOrder })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            notification.textContent = 'Order saved successfully!';
+            notification.style.backgroundColor = 'rgba(76, 175, 80, 0.8)';
+            setTimeout(() => {
+                notification.remove();
+            }, 2000);
+        } else {
+            notification.textContent = 'Failed to save order: ' + (data.message || 'Unknown error');
+            notification.style.backgroundColor = 'rgba(244, 67, 54, 0.8)';
+            setTimeout(() => {
+                notification.remove();
+            }, 3000);
+            console.error('Failed to update song order:', data.message);
+        }
+    })
+    .catch(error => {
+        notification.textContent = 'Error saving order';
+        notification.style.backgroundColor = 'rgba(244, 67, 54, 0.8)';
+        setTimeout(() => {
+            notification.remove();
+        }, 3000);
+        console.error('Error updating song order:', error);
+    });
+    }
 
     if (!playerControls?.classList.contains('hidden')) {
         startProgressPolling();

@@ -13,6 +13,9 @@
     --transition-speed: 0.2s;
     --border-radius: 8px;
     --shadow: 0 2px 4px rgba(0,0,0,0.1);
+    --disk-low: #4CAF50;
+    --disk-medium: #FFC107;
+    --disk-high: #F44336;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -55,6 +58,48 @@ body {
     max-width: 800px;
     margin: 0 auto;
     padding: 20px;
+}
+
+/* Header and User Controls */
+.header-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--border-color);
+}
+
+.header-container h1 {
+    margin-bottom: 0;
+    border-bottom: none;
+}
+
+.user-controls {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.username {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.logout-btn {
+    display: inline-block;
+    padding: 8px 12px;
+    background-color: var(--error-color);
+    color: white;
+    text-decoration: none;
+    border-radius: var(--border-radius);
+    font-size: 0.9rem;
+    transition: background-color var(--transition-speed) ease;
+}
+
+.logout-btn:hover {
+    background-color: var(--error-hover);
+    color: white;
 }
 
 /* Typography */
@@ -283,8 +328,10 @@ h3 {
 .weekday-selection label {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 5px;
-    padding: 5px 10px;
+    padding: 8px 12px;
+    min-width: 45px;
     background: var(--bg-primary);
     border: 1px solid var(--border-color);
     border-radius: 15px;
@@ -292,10 +339,14 @@ h3 {
     user-select: none;
     transition: all var(--transition-speed);
     font-size: 0.9em;
+    position: relative;
+    font-weight: 500;
 }
 
 .weekday-selection label:hover {
     background: var(--bg-secondary);
+    transform: translateY(-2px);
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
 }
 
 .weekday-selection input[type="checkbox"] {
@@ -303,13 +354,30 @@ h3 {
     opacity: 0;
 }
 
-.weekday-selection input[type="checkbox"]:checked + label {
+.weekday-selection input[type="checkbox"]:checked ~ * {
+    color: white;
+}
+
+.weekday-selection input[type="checkbox"]:checked {
+    background: var(--primary-color);
+}
+
+.weekday-selection label.selected,
+.weekday-selection label:has(input[type="checkbox"]:checked) {
     background: var(--primary-color);
     color: white;
     border-color: var(--primary-color);
+    font-weight: bold;
+    transform: translateY(-2px);
+    box-shadow: 0 3px 8px rgba(0,0,0,0.2);
 }
 
-.weekday-selection input[type="checkbox"]:focus + label {
+.weekday-selection input[type="checkbox"]:focus {
+    outline: none;
+}
+
+.weekday-selection label:focus-within,
+.weekday-selection label:has(input[type="checkbox"]:focus) {
     box-shadow: 0 0 0 2px var(--info-color);
 }
 
@@ -445,11 +513,34 @@ button:disabled {
     border-radius: var(--border-radius);
     border: 1px solid var(--border-color);
     transition: all var(--transition-speed);
+    position: relative;
+    cursor: default;
 }
 
 .song-item:hover {
     background-color: var(--bg-secondary);
     transform: translateX(2px);
+}
+
+.song-item.draggable {
+    cursor: move;
+    cursor: grab;
+}
+
+.song-item.dragging {
+    opacity: 0.5;
+    background-color: var(--primary-color);
+    border-color: var(--primary-hover);
+    color: white;
+    transform: scale(1.02);
+    box-shadow: 0 3px 10px rgba(0,0,0,0.2);
+    z-index: 999;
+}
+
+.song-item.drag-over {
+    border: 2px dashed var(--primary-color);
+    padding-top: 20px;
+    padding-bottom: 20px;
 }
 
 .song-info {
@@ -623,4 +714,231 @@ button.loading::after {
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+}
+
+/* Drag and drop styling */
+.drag-handle {
+    cursor: grab;
+    display: flex;
+    align-items: center;
+    padding: 0 15px;
+    color: var(--text-secondary);
+    font-size: 16px;
+}
+
+.drag-handle:hover {
+    color: var(--primary-color);
+}
+
+.song-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px;
+    background-color: var(--bg-primary);
+    border-radius: var(--border-radius);
+    border: 1px solid var(--border-color);
+    transition: all var(--transition-speed);
+    margin-bottom: 8px;
+    cursor: grab;
+    position: relative;
+}
+
+.song-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    width: 5px;
+    height: 0;
+    background-color: var(--primary-color);
+    top: 50%;
+    bottom: 50%;
+    transition: all 0.2s ease-in-out;
+}
+
+.song-item:hover::before {
+    height: 80%;
+    top: 10%;
+    bottom: 10%;
+}
+
+.song-item.dragging {
+    opacity: 0.7;
+    background-color: var(--primary-color);
+    border-color: var(--primary-hover);
+    color: white;
+    transform: scale(1.02);
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    z-index: 999;
+}
+
+.song-item.dragging .song-title,
+.song-item.dragging .song-source,
+.song-item.dragging .song-duration {
+    color: white;
+}
+
+.song-item.drag-over {
+    border: 2px dashed var(--primary-color);
+    padding-top: 20px;
+    padding-bottom: 20px;
+    transform: translateY(5px);
+    background-color: var(--bg-secondary);
+}
+
+.playlist-info {
+    margin-bottom: 15px;
+}
+
+.drag-hint {
+    font-size: 0.9em;
+    color: var(--info-color);
+    padding: 8px 0;
+    background-color: rgba(33, 150, 243, 0.1);
+    border-radius: var(--border-radius);
+    text-align: center;
+    margin-bottom: 15px;
+}
+
+.drag-hint i {
+    margin-right: 5px;
+}
+
+/* Disk Usage Indicator */
+.disk-usage {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 15px 0;
+}
+
+.disk-usage .disk-label {
+    font-size: 0.9em;
+    color: var(--text-primary);
+}
+
+.disk-usage .disk-bar {
+    flex: 1;
+    height: 8px;
+    background: var(--border-color);
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+}
+
+.disk-usage .disk-progress {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    background: var(--disk-low);
+    border-radius: 4px;
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+.disk-usage.warning .disk-progress {
+    background: var(--disk-medium);
+}
+
+.disk-usage.error .disk-progress {
+    background: var(--disk-high);
+}
+
+.disk-usage .disk-percentage {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.9em;
+    color: var(--text-primary);
+}
+
+/* Disk Usage Styles */
+.disk-usage-container {
+    background: var(--bg-primary);
+    padding: 15px 20px;
+    border-radius: var(--border-radius);
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+}
+
+.disk-usage-container h2 {
+    margin-bottom: 15px;
+    font-size: 1.2em;
+}
+
+.disk-usage-info {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.disk-usage-bar-container {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.disk-usage-bar {
+    flex: 1;
+    height: 10px;
+    background: var(--border-color);
+    border-radius: 5px;
+    overflow: hidden;
+    position: relative;
+}
+
+.disk-usage-fill {
+    height: 100%;
+    border-radius: 5px;
+    transition: width 0.3s ease;
+}
+
+.disk-usage-fill {
+    background: var(--disk-low);
+}
+
+.disk-usage-fill[style*="width: 7"] {
+    background: var(--disk-medium);
+}
+
+.disk-usage-fill[style*="width: 8"],
+.disk-usage-fill[style*="width: 9"] {
+    background: var(--disk-high);
+}
+
+.disk-usage-percentage {
+    font-weight: bold;
+    min-width: 50px;
+}
+
+.disk-usage-details {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.disk-usage-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.9em;
+}
+
+.disk-usage-item i {
+    font-size: 1.2em;
+    color: var(--text-secondary);
+}
+
+.disk-usage-item div {
+    display: flex;
+    gap: 15px;
+}
+
+@media (max-width: 600px) {
+    .disk-usage-item div {
+        flex-direction: column;
+        gap: 5px;
+    }
 }

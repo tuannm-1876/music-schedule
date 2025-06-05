@@ -1,0 +1,14 @@
+[Unit]
+Description=Music Scheduler Service
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/schedule-music
+ExecStart=/bin/sh -c 'gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:5000 wsgi:application'
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

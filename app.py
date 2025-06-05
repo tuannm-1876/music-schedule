@@ -1,8 +1,14 @@
-from flask import Flask, render_template, jsonify, request, redirect, url_for, send_file
+# Apply eventlet monkey patching at the very start
+import eventlet
+eventlet.monkey_patch()
+
+from flask import Flask, render_template, jsonify, request, redirect, url_for, send_file, session, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 from flask_wtf.csrf import CSRFProtect
+from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import yt_dlp
@@ -12,6 +18,8 @@ import json
 import subprocess
 import sys
 import logging
+import shutil
+import re
 from werkzeug.utils import secure_filename
 import mutagen
 from mutagen.mp3 import MP3
@@ -39,17 +47,49 @@ app = Flask(__name__)
 csrf = CSRFProtect(app)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///music.db'
 app.config['UPLOAD_FOLDER'] = 'music'
-app.config['SECRET_KEY'] = 'your-secret-key'
+app.config['SECRET_KEY'] = 'super-secret-key-for-music-scheduler-app'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SESSION_TYPE'] = 'filesystem'
+app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours session lifetime
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_SIZE
 app.config['CORS_HEADERS'] = 'Content-Type'
-socketio = SocketIO(app, async_mode='threading')
+socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins='*', message_queue=None)
 CORS(app)
 db = SQLAlchemy(app)
 
 # Get absolute path for the project directory
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-MUSIC_DIR = os.path.join(BASE_DIR, "music")
+MUSIC_DIR = os.path.join(BASE_DIR, app.config['UPLOAD_FOLDER'])
+
+# Function to get disk usage information
+def get_disk_usage():
+    """Get disk usage information for the music folder"""
+    try:
+        # Get disk usage for the partition where the music folder is located
+        total, used, free = shutil.disk_usage(MUSIC_DIR)
+        
+        # Convert to readable format
+        total_gb = total / (1024 ** 3)  # Convert to GB
+        used_gb = used / (1024 ** 3)
+        free_gb = free / (1024 ** 3)
+        
+        # Calculate percentage used
+        percentage_used = (used / total) * 100
+        
+        return {
+            'total_gb': round(total_gb, 2),
+            'used_gb': round(used_gb, 2),
+            'free_gb': round(free_gb, 2),
+            'percentage_used': round(percentage_used, 1)
+        }
+    except Exception as e:
+        logger.error(f"Error getting disk usage: {e}")
+        return {
+            'total_gb': 0,
+            'used_gb': 0,
+            'free_gb': 0,
+            'percentage_used': 0
+        }
 
 # Initialize pygame mixer for audio playback
 pygame.mixer.init()
@@ -64,6 +104,23 @@ def init_scheduler():
         scheduler.start()
         scheduler.add_job(safe_broadcast, 'interval', seconds=BROADCAST_INTERVAL, id='broadcast_playback')
         scheduler.add_job(update_ytdlp, 'cron', hour=UPDATE_YTDLP_HOUR, id='update_ytdlp')
+
+def init_admin_user():
+    """Initialize the admin user if not exists"""
+    try:
+        with session_scope() as db_session:
+            admin = db_session.query(User).filter_by(username='admin').first()
+            if not admin:
+                logger.info("Creating admin user")
+                admin = User(username='admin')
+                admin.set_password('Sun123@')
+                db_session.add(admin)
+                db_session.commit()
+                logger.info("Admin user created successfully")
+            else:
+                logger.info("Admin user already exists")
+    except Exception as e:
+        logger.error(f"Error initializing admin user: {e}")
 
 # Ensure directories exist
 os.makedirs(MUSIC_DIR, exist_ok=True)
@@ -92,17 +149,33 @@ def session_scope():
 def broadcast_playback_state():
     """Broadcast current playback state to all clients"""
     try:
-        if pygame.mixer.music.get_busy() and current_song_id:
+        global current_position, current_song_id, current_song_duration, is_playing
+        
+        music_busy = pygame.mixer.music.get_busy()
+        
+        if music_busy and current_song_id:
             pos = pygame.mixer.music.get_pos()
             if pos >= 0:
-                global current_position
                 current_position = pos / 1000
+        elif not music_busy and is_playing and current_song_id:
+            # Song has finished playing
+            logger.info(f"Song finished playing: {current_song_id}")
+            current_position = 0
+            current_song_id = None
+            current_song_duration = 0
+            is_playing = False
+            
+            # Emit song finished event
+            socketio.emit('song_finished', {
+                'message': 'Song playback completed'
+            })
 
         socketio.emit('playback_update', {
             'position': current_position,
             'duration': current_song_duration,
-            'is_playing': pygame.mixer.music.get_busy(),
-            'volume': volume
+            'is_playing': music_busy,
+            'volume': volume,
+            'current_song_id': current_song_id
         })
     except Exception as e:
         logger.error(f"Error in broadcast_playback_state: {e}")
@@ -141,10 +214,31 @@ class Song(db.Model):
     title = db.Column(db.String(200), nullable=False)
     filename = db.Column(db.String(200), nullable=False, unique=True)
     priority = db.Column(db.Integer, default=0)
+    position = db.Column(db.Integer, default=0)  # New field for song ordering
     source = db.Column(db.String(50))
     duration = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_played_at = db.Column(db.DateTime, nullable=True)
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+        
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+# Create a function to check if a user is logged in
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -201,6 +295,7 @@ def get_next_scheduled_song():
             if valid_schedules:
                 next_schedule = valid_schedules[0]
                 next_song_to_play = session.query(Song).order_by(
+                    Song.position.asc(),
                     Song.last_played_at.is_(None).desc(),
                     Song.priority.desc(),
                     Song.last_played_at.asc()
@@ -289,6 +384,7 @@ def schedule_music():
                                     replace_existing=True,
                                     next_run_time=schedule_time
                                 )
+                                logger.info(f"Added job {job_id} with next run today at {schedule_time}")
                             else:
                                 scheduler.add_job(
                                     play_next_song,
@@ -299,9 +395,20 @@ def schedule_music():
                                     id=job_id,
                                     replace_existing=True
                                 )
+                                logger.info(f"Added job {job_id} for days: {','.join(days_of_week)} at {hour:02d}:{minute:02d}")
+                        else:
+                            logger.warning(f"Schedule {schedule.id} has no enabled days, skipping")
                     except ValueError as e:
                         logger.error(f"Error processing schedule {schedule.id}: {e}")
                         continue
+                
+                # Log final job count for debugging
+                all_jobs = scheduler.get_jobs()
+                schedule_jobs = [job for job in all_jobs if job.id.startswith('schedule_')]
+                logger.info(f"Schedule reload complete. Total jobs: {len(all_jobs)}, Schedule jobs: {len(schedule_jobs)}")
+                for job in schedule_jobs:
+                    logger.info(f"  Job {job.id}: next run at {job.next_run_time}")
+                
                 return True
                 
         except Exception as e:
@@ -324,25 +431,9 @@ def play_next_song():
         logger.info("Scheduler triggered play next song")
         try:
             with session_scope() as session:
+                # Find the next song to play - prioritize songs that haven't been played
                 next_song = session.query(Song).order_by(
-                    Song.last_played_at.is_(None).desc(),
-                    Song.priority.desc(),
-                    Song.last_played_at.asc()
-                ).first()
-
-                if next_song:
-                    logger.info(f"Selected song to play: {next_song.title}")
-                    # Trigger playlist update through socket
-                    socketio.emit('schedule_triggered', {
-                        'song_id': next_song.id,
-                        'title': next_song.title,
-                        'time': datetime.now().strftime("%H:%M")
-                    })
-                else:
-                    logger.warning("No songs found in playlist")
-                    return
-            with session_scope() as session:
-                next_song = session.query(Song).order_by(
+                    Song.position.asc(),
                     Song.last_played_at.is_(None).desc(),
                     Song.priority.desc(),
                     Song.last_played_at.asc()
@@ -350,6 +441,12 @@ def play_next_song():
 
                 if next_song:
                     logger.info(f"Playing song: {next_song.title}")
+                    # Trigger playlist update through socket
+                    socketio.emit('schedule_triggered', {
+                        'song_id': next_song.id,
+                        'title': next_song.title,
+                        'time': datetime.now().strftime("%H:%M")
+                    })
                     play_music(next_song.id)
                 else:
                     logger.warning("No songs found in the playlist")
@@ -383,7 +480,23 @@ def play_music(song_id):
             is_playing = True
             current_position = 0
             
+            # Update last_played_at and move song to end of playlist
             song.last_played_at = datetime.utcnow()
+            
+            # Move this song to the end and reorder other songs
+            # Get all songs ordered by current position
+            all_songs = session.query(Song).order_by(Song.position.asc()).all()
+            
+            # Remove the current song from the list and add it to the end
+            other_songs = [s for s in all_songs if s.id != song_id]
+            other_songs.append(song)
+            
+            # Reassign positions starting from 0
+            for i, s in enumerate(other_songs):
+                s.position = i
+            
+            logger.info(f"Updated song {song.title} - last_played_at: {song.last_played_at}, new position: {song.position} (moved to end)")
+            
             broadcast_playback_state()
             return True
 
@@ -396,7 +509,6 @@ def play_music(song_id):
 
 def normalize_filename(title):
     # Replace special characters and spaces
-    import re
     # Remove any character that is not alphanumeric, space, or underscore
     title = re.sub(r'[^\w\s]', '', title)
     # Replace spaces with underscores
@@ -447,10 +559,15 @@ def download_music(url):
         raise
 
 @app.route('/')
+@login_required
 def index():
     try:
+        # Get disk usage information
+        disk_usage = get_disk_usage()
+        
         with session_scope() as session:
             songs = session.query(Song).order_by(
+                Song.position.asc(),
                 Song.last_played_at.is_(None).desc(),
                 Song.priority.desc(),
                 Song.last_played_at.asc()
@@ -484,6 +601,7 @@ def index():
             if valid_schedules:
                 next_schedule = valid_schedules[0]
                 next_song_to_play = session.query(Song).order_by(
+                    Song.position.asc(),
                     Song.last_played_at.is_(None).desc(),
                     Song.priority.desc(),
                     Song.last_played_at.asc()
@@ -513,12 +631,14 @@ def index():
                                current_song=current_song,
                                current_position=current_pos,
                                is_playing=is_playing,
-                               volume=volume)
+                               volume=volume,
+                               disk_usage=disk_usage)
     except Exception as e:
         logger.error(f"Error rendering index page: {e}")
         return "Internal Server Error", 500
 
 @app.route('/set-volume/<value>')
+@login_required
 def set_volume(value):
     global volume
     try:
@@ -535,6 +655,7 @@ def set_volume(value):
         }), 400
 
 @app.route('/add-schedule', methods=['POST'])
+@login_required
 def add_schedule():
     time = request.form.get('time')
     if not time:
@@ -557,8 +678,6 @@ def add_schedule():
             session.add(schedule)
             session.flush()
 
-            schedule_music()
-
             days_map = {
                 'monday': 'Mon', 'tuesday': 'Tue', 'wednesday': 'Wed',
                 'thursday': 'Thu', 'friday': 'Fri', 'saturday': 'Sat', 'sunday': 'Sun'
@@ -566,7 +685,7 @@ def add_schedule():
             enabled_days = [days_map[day] for day in weekdays_selected if day in days_map]
             weekdays_display_str = ' • '.join(enabled_days)
 
-            return jsonify({
+            schedule_data = {
                 'success': True,
                 'schedule': {
                     'id': schedule.id,
@@ -574,7 +693,12 @@ def add_schedule():
                     'weekdays_display': weekdays_display_str,
                     'enabled': schedule.enabled
                 }
-            })
+            }
+
+        # Reload schedules after the database transaction is committed
+        schedule_music()
+        
+        return jsonify(schedule_data)
 
     except ValueError:
         return jsonify({'success': False, 'message': 'Invalid time format. Use HH:MM.'}), 400
@@ -583,34 +707,45 @@ def add_schedule():
         return jsonify({'success': False, 'message': 'An internal error occurred.'}), 500
 
 @app.route('/toggle-schedule/<int:id>')
+@login_required
 def toggle_schedule(id):
     try:
         with session_scope() as session:
             schedule = session.get(Schedule, id)
             if schedule:
                 schedule.enabled = not schedule.enabled
-                schedule_music()
-                return jsonify({'success': True})
-            return jsonify({'success': False, 'message': 'Schedule not found'}), 404
+                result = {'success': True}
+            else:
+                return jsonify({'success': False, 'message': 'Schedule not found'}), 404
+        
+        # Reload schedules after the database transaction is committed
+        schedule_music()
+        return jsonify(result)
     except Exception as e:
         logger.error(f"Error toggling schedule {id}: {e}")
         return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
 
 @app.route('/delete-schedule/<int:id>')
+@login_required
 def delete_schedule(id):
     try:
         with session_scope() as session:
             schedule = session.get(Schedule, id)
             if schedule:
                 session.delete(schedule)
-                schedule_music()
-                return jsonify({'success': True})
-            return jsonify({'success': False, 'message': 'Schedule not found'}), 404
+                result = {'success': True}
+            else:
+                return jsonify({'success': False, 'message': 'Schedule not found'}), 404
+        
+        # Reload schedules after the database transaction is committed
+        schedule_music()
+        return jsonify(result)
     except Exception as e:
         logger.error(f"Error deleting schedule {id}: {e}")
         return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
 
 @app.route('/add-music', methods=['POST'])
+@login_required
 def add_music():
     url = request.form.get('url')
     if not url:
@@ -627,11 +762,15 @@ def add_music():
             if existing_song:
                 return jsonify({'success': False, 'message': 'This song already exists in the playlist'}), 400
 
+            # Get max position and add 1
+            max_position = session.query(db.func.max(Song.position)).scalar() or -1
+            
             song = Song(
                 title=music_info['title'],
                 filename=music_info['filename'],
                 source='youtube',
-                duration=music_info['duration']
+                duration=music_info['duration'],
+                position=max_position + 1
             )
             session.add(song)
             return jsonify({'success': True, 'message': 'Music added successfully'})
@@ -640,6 +779,7 @@ def add_music():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/upload-music', methods=['POST'])
+@login_required
 def upload_music():
     if 'file' not in request.files:
         return jsonify({'success': False, 'message': 'No file uploaded'}), 400
@@ -654,7 +794,7 @@ def upload_music():
     try:
         filename = secure_filename(file.filename)
         filepath = os.path.join('music', filename)
-        full_filepath = os.path.join(BASE_DIR, filepath)
+        full_filepath = os.path.join(MUSIC_DIR, filename)
 
         with session_scope() as session:
             # Check if song with same filename already exists
@@ -669,11 +809,15 @@ def upload_music():
                 os.remove(full_filepath)
                 return jsonify({'success': False, 'message': 'Could not determine audio duration'}), 400
 
+            # Get max position and add 1
+            max_position = session.query(db.func.max(Song.position)).scalar() or -1
+            
             song = Song(
                 title=os.path.splitext(filename)[0],
                 filename=filepath,
                 source='upload',
-                duration=duration
+                duration=duration,
+                position=max_position + 1
             )
             session.add(song)
             return jsonify({'success': True, 'message': 'File uploaded successfully'})
@@ -684,6 +828,7 @@ def upload_music():
         return jsonify({'success': False, 'message': 'Error uploading file'}), 500
 
 @app.route('/update-priority/<int:id>', methods=['POST'])
+@login_required
 def update_priority(id):
     try:
         priority = request.form.get('priority', type=int)
@@ -701,6 +846,7 @@ def update_priority(id):
         return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
 
 @app.route('/play/<int:id>')
+@login_required
 def play(id):
     success = play_music(id)
     return jsonify({'success': success})
@@ -757,6 +903,7 @@ def handle_stop():
         emit('stop_error', {'error': str(e)})
 
 @app.route('/seek/<float:position>')
+@login_required
 def seek(position):
     """Seek to a specific position in the current song."""
     global current_position
@@ -789,6 +936,7 @@ def seek(position):
         return jsonify({'success': False, 'message': 'Error during seek'}), 500
 
 @app.route('/delete-song/<int:id>')
+@login_required
 def delete_song(id):
     global current_song_id, current_song_duration, is_playing, current_position
     try:
@@ -817,6 +965,7 @@ def delete_song(id):
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/stream/<int:id>')
+@login_required
 def stream(id):
     try:
         with session_scope() as session:
@@ -845,6 +994,94 @@ def handle_volume(data):
         logger.error(f"Error setting volume: {e}")
         emit('error', {'message': 'Error setting volume'})
 
+@app.route('/update-song-order', methods=['POST'])
+@login_required
+def update_song_order():
+    try:
+        data = request.json
+        if not data or 'songs' not in data:
+            return jsonify({'success': False, 'message': 'No song order data provided'}), 400
+            
+        song_order = data['songs']  # List of {id: song_id, position: new_position}
+        
+        with session_scope() as session:
+            for item in song_order:
+                song_id = item.get('id')
+                position = item.get('position')
+                
+                if song_id is None or position is None:
+                    continue
+                    
+                song = session.get(Song, song_id)
+                if song:
+                    song.position = position
+            
+            return jsonify({'success': True})
+            
+    except Exception as e:
+        logger.error(f"Error updating song order: {e}")
+        return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
+
+@app.route('/reset-playlist-order', methods=['POST'])
+@login_required
+def reset_playlist_order():
+    """Reset playlist order based on play history and priority"""
+    try:
+        success = reset_song_positions()
+        if success:
+            return jsonify({'success': True, 'message': 'Playlist order reset successfully'})
+        else:
+            return jsonify({'success': False, 'message': 'Failed to reset playlist order'}), 500
+    except Exception as e:
+        logger.error(f"Error in reset playlist order route: {e}")
+        return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
+
+@app.route('/get-disk-usage')
+@login_required
+def disk_usage_api():
+    """API endpoint to get disk usage information"""
+    try:
+        disk_usage = get_disk_usage()
+        return jsonify({'success': True, 'data': disk_usage})
+    except Exception as e:
+        logger.error(f"Error getting disk usage: {e}")
+        return jsonify({'success': False, 'message': 'Error retrieving disk space information'}), 500
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Login route"""
+    if 'user_id' in session:
+        return redirect(url_for('index'))
+        
+    error = None
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        if not username or not password:
+            error = "Please provide both username and password"
+        else:
+            with session_scope() as db_session:
+                user = db_session.query(User).filter_by(username=username).first()
+                
+                if user and user.check_password(password):
+                    session['user_id'] = user.id
+                    session['username'] = user.username
+                    
+                    # Redirect to requested page or default to index
+                    next_page = request.args.get('next', url_for('index'))
+                    return redirect(next_page)
+                else:
+                    error = "Invalid username or password"
+    
+    return render_template('login.html', error=error)
+
+@app.route('/logout')
+def logout():
+    """Logout route"""
+    session.clear()
+    return redirect(url_for('login'))
+
 def list_scheduler_jobs():
     """List all current jobs in the scheduler"""
     global scheduler
@@ -859,8 +1096,11 @@ def list_scheduler_jobs():
 with app.app_context():
     db.create_all()
     init_scheduler()
+    init_admin_user()
     schedule_music()
     list_scheduler_jobs()
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    # For development only - in production use Gunicorn with eventlet
+    # eventlet monkey patching is already done at the top of the file
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
