@@ -155,11 +155,50 @@ def init_admin_user():
             admin = db_session.query(User).filter_by(username='admin').first()
             if not admin:
                 logger.info("Creating admin user")
+                
+                # Import random password generation
+                import secrets
+                import string
+                
+                def generate_random_password(length=16):
+                    lowercase = string.ascii_lowercase
+                    uppercase = string.ascii_uppercase
+                    digits = string.digits
+                    special = "!@#$%^&*"
+                    
+                    password = [
+                        secrets.choice(lowercase),
+                        secrets.choice(uppercase),
+                        secrets.choice(digits),
+                        secrets.choice(special)
+                    ]
+                    
+                    all_chars = lowercase + uppercase + digits + special
+                    for _ in range(length - 4):
+                        password.append(secrets.choice(all_chars))
+                    
+                    secrets.SystemRandom().shuffle(password)
+                    return ''.join(password)
+                
+                random_password = generate_random_password()
+                
                 admin = User(username='admin')
-                admin.set_password('Sun123@')
+                admin.set_password(random_password)
                 db_session.add(admin)
                 db_session.commit()
+                
+                # Display password prominently
+                print("\n" + "="*60)
+                print("🔐 ADMIN PASSWORD GENERATED")
+                print("="*60)
+                print(f"Username: admin")
+                print(f"Password: {random_password}")
+                print("="*60)
+                print("⚠️  SAVE THIS PASSWORD NOW! It will not be shown again.")
+                print("="*60 + "\n")
+                
                 logger.info("Admin user created successfully")
+                logger.info(f"Admin password: {random_password}")
             else:
                 logger.info("Admin user already exists")
     except Exception as e:
