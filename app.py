@@ -43,6 +43,17 @@ BROADCAST_INTERVAL = 0.5
 UPDATE_YTDLP_HOUR = 1
 MAX_UPLOAD_SIZE = 16 * 1024 * 1024  # 16MB
 
+# Global download state
+download_state = {
+    'active': False,
+    'status': '',
+    'message': '',
+    'current': 0,
+    'total': 0,
+    'current_song': '',
+    'playlist_title': ''
+}
+
 app = Flask(__name__)
 csrf = CSRFProtect(app)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///music.db'
@@ -97,6 +108,38 @@ pygame.mixer.music.set_volume(DEFAULT_VOLUME)
 
 # Initialize scheduler
 scheduler = None
+# Download state management functions
+def set_download_state(status, message='', current=0, total=0, current_song='', playlist_title=''):
+    """Update global download state"""
+    global download_state
+    download_state.update({
+        'active': status != 'completed' and status != 'error',
+        'status': status,
+        'message': message,
+        'current': current,
+        'total': total,
+        'current_song': current_song,
+        'playlist_title': playlist_title
+    })
+    logger.info(f"Download state updated: {download_state}")
+
+def get_download_state():
+    """Get current download state"""
+    return download_state.copy()
+
+def clear_download_state():
+    """Clear download state"""
+    global download_state
+    download_state = {
+        'active': False,
+        'status': '',
+        'message': '',
+        'current': 0,
+        'total': 0,
+        'current_song': '',
+        'playlist_title': ''
+    }
+
 def init_scheduler():
     global scheduler
     if scheduler is None:
@@ -565,7 +608,18 @@ def normalize_filename(title):
     title = re.sub(r'_+', '_', title)
     return title
 
-def download_music(url):
+def is_playlist_url(url):
+    """Check if URL is a playlist"""
+    playlist_indicators = [
+        'playlist?list=',
+        '&list=',
+        '/playlist/',
+        'music.youtube.com/playlist'
+    ]
+    return any(indicator in url for indicator in playlist_indicators)
+
+def download_single_track(url):
+    """Download a single track from YouTube"""
     try:
         # First extract info without downloading
         with yt_dlp.YoutubeDL({'extract_flat': True}) as ydl:
@@ -601,10 +655,193 @@ def download_music(url):
             'title': info['title'],
             'filename': actual_filename,
             'duration': duration
-            }
+        }
     except Exception as e:
-        logger.error(f"Error downloading music from {url}: {e}")
+        logger.error(f"Error downloading single track from {url}: {e}")
         raise
+
+def download_playlist(url):
+    """Download all tracks from a YouTube playlist"""
+    try:
+        logger.info(f"Processing playlist: {url}")
+        
+        # Update state and emit start event
+        set_download_state('analyzing', 'Đang phân tích playlist...', 0, 0)
+        socketio.emit('download_progress', {
+            'status': 'analyzing',
+            'message': 'Đang phân tích playlist...',
+            'current': 0,
+            'total': 0
+        })
+        
+        # Extract playlist info
+        ydl_opts_info = {
+            'extract_flat': True,
+            'quiet': False,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
+            playlist_info = ydl.extract_info(url, download=False)
+            
+        if 'entries' not in playlist_info:
+            raise Exception("Không thể trích xuất danh sách bài hát từ playlist")
+            
+        entries = playlist_info['entries']
+        if not entries:
+            raise Exception("Playlist trống hoặc không thể truy cập")
+            
+        playlist_title = playlist_info.get('title', 'Unknown')
+        logger.info(f"Tìm thấy {len(entries)} bài hát trong playlist: {playlist_title}")
+        
+        
+        downloaded_songs = []
+        failed_downloads = []
+        
+        # Download each track individually
+        for i, entry in enumerate(entries, 1):
+            if not entry:
+                continue
+                
+            try:
+                video_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry['id']}"
+                video_title = entry.get('title', f'Unknown Track {i}')
+                
+                logger.info(f"Đang tải bài {i}/{len(entries)}: {video_title}")
+                
+                # Update state and emit progress for current track
+                set_download_state('downloading', f'Đang tải bài {i}/{len(entries)}', i, len(entries), video_title, playlist_title)
+                socketio.emit('download_progress', {
+                    'status': 'downloading',
+                    'message': f'Đang tải bài {i}/{len(entries)}',
+                    'current_song': video_title,
+                    'current': i,
+                    'total': len(entries)
+                })
+                
+                
+                # Get detailed info for this specific video
+                ydl_opts_detail = {
+                    'quiet': True,
+                    'no_warnings': True
+                }
+                
+                with yt_dlp.YoutubeDL(ydl_opts_detail) as ydl_detail:
+                    video_info = ydl_detail.extract_info(video_url, download=False)
+                    duration = int(video_info.get('duration', 0))
+                    actual_title = video_info.get('title', video_title)
+                    
+                normalized_title = normalize_filename(actual_title)
+                
+                # Check if song already exists
+                mp3_file = os.path.join(MUSIC_DIR, f'{normalized_title}.mp3')
+                if os.path.exists(mp3_file):
+                    logger.info(f"Bài hát đã tồn tại, bỏ qua: {actual_title}")
+                    continue
+                
+                # Download the track
+                ydl_opts_download = {
+                    'format': 'bestaudio/best',
+                    'outtmpl': os.path.join(MUSIC_DIR, f'{normalized_title}.%(ext)s'),
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }],
+                    'quiet': True,
+                    'no_warnings': True
+                }
+                
+                with yt_dlp.YoutubeDL(ydl_opts_download) as ydl_download:
+                    ydl_download.download([video_url])
+                
+                if not os.path.exists(mp3_file):
+                    raise Exception(f"File không được tạo: {mp3_file}")
+                    
+                actual_filename = os.path.relpath(mp3_file, BASE_DIR)
+                
+                if duration == 0:
+                    duration = get_audio_duration(mp3_file)
+                
+                # Add song to database immediately after successful download
+                with session_scope() as db_session:
+                    try:
+                        # Check if song with same filename already exists
+                        existing_song = db_session.query(Song).filter_by(filename=actual_filename).first()
+                        if not existing_song:
+                            # Get max position and add 1
+                            max_position = db_session.query(db.func.max(Song.position)).scalar() or -1
+                            
+                            song = Song(
+                                title=actual_title,
+                                filename=actual_filename,
+                                source='youtube_playlist',
+                                duration=duration,
+                                position=max_position + 1
+                            )
+                            db_session.add(song)
+                            db_session.commit()
+                            logger.info(f"Added song to database immediately: {actual_title}")
+                            
+                            # Emit update to refresh UI
+                            socketio.emit('song_added', {
+                                'title': actual_title,
+                                'message': f'Đã thêm bài hát: {actual_title}'
+                            })
+                        else:
+                            logger.info(f"Song already exists in database: {actual_title}")
+                    except Exception as db_error:
+                        logger.error(f"Error adding song to database: {actual_title} - {db_error}")
+                
+                downloaded_songs.append({
+                    'title': actual_title,
+                    'filename': actual_filename,
+                    'duration': duration
+                })
+                
+                logger.info(f"Đã tải thành công: {actual_title}")
+                
+            except Exception as e:
+                logger.error(f"Lỗi khi tải bài {i} ({video_title}): {e}")
+                failed_downloads.append({
+                    'title': video_title,
+                    'error': str(e)
+                })
+                continue
+        
+        result = {
+            'playlist_title': playlist_info.get('title', 'Unknown Playlist'),
+            'total_tracks': len(entries),
+            'downloaded_tracks': len(downloaded_songs),
+            'failed_tracks': len(failed_downloads),
+            'songs': downloaded_songs,
+            'failed_songs': failed_downloads
+        }
+        
+        logger.info(f"Hoàn thành tải playlist: {result['downloaded_tracks']}/{result['total_tracks']} bài hát thành công")
+        
+        # Clear state and emit completion event
+        clear_download_state()
+        socketio.emit('download_progress', {
+            'status': 'completed',
+            'message': f'Hoàn thành! Đã tải {result["downloaded_tracks"]}/{result["total_tracks"]} bài hát',
+            'current': result['total_tracks'],
+            'total': result['total_tracks'],
+            'downloaded': result['downloaded_tracks'],
+            'failed': result['failed_tracks']
+        })
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error downloading playlist from {url}: {e}")
+        raise
+
+def download_music(url):
+    """Main function to download music - handles both single tracks and playlists"""
+    if is_playlist_url(url):
+        return download_playlist(url)
+    else:
+        return download_single_track(url)
 
 @app.route('/')
 @login_required
@@ -681,7 +918,8 @@ def index():
                                is_playing=is_playing,
                                volume=volume,
                                disk_usage=disk_usage,
-                               ytdlp_version=get_ytdlp_version())
+                               ytdlp_version=get_ytdlp_version(),
+                               download_state=get_download_state())
     except Exception as e:
         logger.error(f"Error rendering index page: {e}")
         return "Internal Server Error", 500
@@ -801,28 +1039,82 @@ def add_music():
         return jsonify({'success': False, 'message': 'No URL provided'}), 400
 
     try:
+        # Check if it's a playlist to start progress tracking
+        if is_playlist_url(url):
+            socketio.emit('download_progress', {
+                'status': 'starting',
+                'message': 'Bắt đầu xử lý playlist...',
+                'current': 0,
+                'total': 0
+            })
+        
         music_info = download_music(url)
-        if not music_info['duration']:
-            return jsonify({'success': False, 'message': 'Could not determine video duration'})
+        
+        # Handle playlist response
+        if 'songs' in music_info:  # This is a playlist
+            playlist_title = music_info['playlist_title']
+            downloaded_songs = music_info['songs']
+            failed_songs = music_info['failed_songs']
             
-        with session_scope() as session:
-            # Check if song with same filename already exists
-            existing_song = session.query(Song).filter_by(filename=music_info['filename']).first()
-            if existing_song:
-                return jsonify({'success': False, 'message': 'This song already exists in the playlist'}), 400
+            if not downloaded_songs:
+                error_msg = f"Không thể tải bài hát nào từ playlist '{playlist_title}'"
+                if failed_songs:
+                    error_msg += f". Lỗi: {len(failed_songs)} bài hát thất bại"
+                return jsonify({'success': False, 'message': error_msg}), 400
+            
+            # Songs are already added to database during download process
+            # Just count them for response
+            added_songs = [song['title'] for song in downloaded_songs]
+            skipped_songs = []
+            
+            logger.info(f"Playlist processing completed: {len(added_songs)} songs were added during download")
+            
+            # Create response message
+            message_parts = []
+            if added_songs:
+                message_parts.append(f"Đã thêm {len(added_songs)} bài hát từ playlist '{playlist_title}'")
+            if skipped_songs:
+                message_parts.append(f"{len(skipped_songs)} bài hát đã tồn tại trong playlist")
+            if failed_songs:
+                message_parts.append(f"{len(failed_songs)} bài hát tải thất bại")
+            
+            response_message = ". ".join(message_parts)
+            
+            return jsonify({
+                'success': True,
+                'message': response_message,
+                'playlist_info': {
+                    'playlist_title': playlist_title,
+                    'total_tracks': music_info['total_tracks'],
+                    'added_tracks': len(added_songs),
+                    'skipped_tracks': len(skipped_songs),
+                    'failed_tracks': len(failed_songs)
+                }
+            })
+            
+        else:  # This is a single track
+            if not music_info['duration']:
+                return jsonify({'success': False, 'message': 'Could not determine video duration'})
+                
+            with session_scope() as session:
+                # Check if song with same filename already exists
+                existing_song = session.query(Song).filter_by(filename=music_info['filename']).first()
+                if existing_song:
+                    return jsonify({'success': False, 'message': 'This song already exists in the playlist'}), 400
 
-            # Get max position and add 1
-            max_position = session.query(db.func.max(Song.position)).scalar() or -1
-            
-            song = Song(
-                title=music_info['title'],
-                filename=music_info['filename'],
-                source='youtube',
-                duration=music_info['duration'],
-                position=max_position + 1
-            )
-            session.add(song)
-            return jsonify({'success': True, 'message': 'Music added successfully'})
+                # Get max position and add 1
+                max_position = session.query(db.func.max(Song.position)).scalar() or -1
+                
+                song = Song(
+                    title=music_info['title'],
+                    filename=music_info['filename'],
+                    source='youtube',
+                    duration=music_info['duration'],
+                    position=max_position + 1
+                )
+                session.add(song)
+                return jsonify({'success': True, 'message': 'Music added successfully'})
+                
     except Exception as e:
         logger.error(f"Error adding music from URL {url}: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -888,23 +1180,6 @@ def update_ytdlp_manual():
         logger.error(f"Error manually updating yt-dlp: {e}")
         return jsonify({'success': False, 'message': 'Failed to update yt-dlp'}), 500
 
-@app.route('/update-priority/<int:id>', methods=['POST'])
-@login_required
-def update_priority(id):
-    try:
-        priority = request.form.get('priority', type=int)
-        if priority is None:
-            return jsonify({'success': False, 'message': 'Priority is required'}), 400
-
-        with session_scope() as session:
-            song = session.get(Song, id)
-            if song:
-                song.priority = priority
-                return jsonify({'success': True})
-            return jsonify({'success': False, 'message': 'Song not found'}), 404
-    except Exception as e:
-        logger.error(f"Error updating priority for song {id}: {e}")
-        return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
 
 @app.route('/play/<int:id>')
 @login_required
@@ -1083,6 +1358,28 @@ def update_song_order():
         logger.error(f"Error updating song order: {e}")
         return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
 
+def reset_song_positions():
+    """Reset song positions based on play history and priority"""
+    try:
+        with session_scope() as session:
+            # Get all songs ordered by priority (desc), then by last_played_at (asc, nulls first)
+            songs = session.query(Song).order_by(
+                Song.priority.desc(),
+                Song.last_played_at.is_(None).desc(),
+                Song.last_played_at.asc()
+            ).all()
+            
+            # Reassign positions starting from 0
+            for i, song in enumerate(songs):
+                song.position = i
+                
+            logger.info(f"Reset positions for {len(songs)} songs")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Error resetting song positions: {e}")
+        return False
+
 @app.route('/reset-playlist-order', methods=['POST'])
 @login_required
 def reset_playlist_order():
@@ -1107,6 +1404,16 @@ def disk_usage_api():
     except Exception as e:
         logger.error(f"Error getting disk usage: {e}")
         return jsonify({'success': False, 'message': 'Error retrieving disk space information'}), 500
+
+@app.route('/get-download-state')
+@login_required
+def get_download_state_api():
+    """API endpoint to get current download state"""
+    try:
+        return jsonify({'success': True, 'data': get_download_state()})
+    except Exception as e:
+        logger.error(f"Error getting download state: {e}")
+        return jsonify({'success': False, 'message': 'Error retrieving download state'}), 500
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():

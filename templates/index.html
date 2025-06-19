@@ -74,6 +74,29 @@
         </div>
       </div>
 
+      <!-- Global Download Progress -->
+      <div class="global-progress-container" id="global-progress" style="display: {% if download_state.active %}block{% else %}none{% endif %};" role="region" aria-label="Download progress">
+        <div class="progress-header">
+          <h3><i class="fas fa-download"></i>
+            {% if download_state.playlist_title %}
+              Đang tải playlist: {{ download_state.playlist_title }}
+            {% else %}
+              Đang tải playlist...
+            {% endif %}
+          </h3>
+          <div class="progress-details">
+            <span id="progress-current-song">{{ download_state.current_song or download_state.message or 'Đang chuẩn bị...' }}</span>
+            <span id="progress-count">{{ download_state.current }}/{{ download_state.total }}</span>
+          </div>
+        </div>
+        <div class="progress-bar-wrapper">
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="global-progress-fill" style="width: {% if download_state.total > 0 %}{{ (download_state.current / download_state.total * 100)|round }}{% else %}0{% endif %}%"></div>
+          </div>
+          <div class="progress-percentage" id="global-progress-percentage">{% if download_state.total > 0 %}{{ (download_state.current / download_state.total * 100)|round }}{% else %}0{% endif %}%</div>
+        </div>
+      </div>
+
       <!-- Disk Usage Indicator (Collapsible) -->
       <div class="disk-usage-container collapsible-section" role="region" aria-label="Disk usage information">
         <div class="section-header">
@@ -243,12 +266,16 @@
         <div class="section-content collapsed" id="add-music-content">
           <div class="youtube-form">
             <h3>From YouTube / YouTube Music</h3>
+            <p class="form-description">
+              Hỗ trợ thêm bài hát đơn lẻ hoặc cả playlist từ YouTube/YouTube Music.
+              Chỉ cần dán URL và hệ thống sẽ tự động nhận diện và tải xuống.
+            </p>
             <form id="addMusicForm" data-csrf-token="{{ csrf_token() }}">
               <input
                 type="text"
                 id="youtubeUrl"
                 name="url"
-                placeholder="Enter YouTube/YouTube Music URL"
+                placeholder="Enter YouTube/YouTube Music URL (single track or playlist)"
                 required
                 pattern="^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com|youtube\.com\/shorts|m\.youtube\.com)\/.+"
                 aria-label="YouTube/YouTube Music URL"
@@ -301,15 +328,7 @@
               <span class="song-duration">{{ "%d:%02d"|format(song.duration//60, song.duration%60) }}</span>
             </div>
             <div class="song-controls">
-              <input
-                type="number"
-                class="priority-input"
-                value="{{ song.priority }}"
-                min="0"
-                step="1"
-                aria-label="Song priority"
-              />
-              <button 
+              <button
                 class="play-btn"
                 data-action="play"
                 aria-label="Play {{ song.title }}"

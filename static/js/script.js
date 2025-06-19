@@ -223,8 +223,161 @@ function handleForm(formId, url, successCallback) {
     });
 }
 
+// Special handler for add music form with playlist support
+function handleAddMusicForm() {
+    const form = document.getElementById('addMusicForm');
+    if (!form) return;
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const submitButton = form.querySelector('button[type="submit"]');
+        const messageDiv = form.querySelector('.form-message') || createMessageDiv(form);
+        
+        setLoading(submitButton, true);
+        messageDiv.textContent = '';
+        messageDiv.className = 'form-message';
+
+        // Setup progress tracking for playlists
+        const url = form.querySelector('input[name="url"]').value;
+        const isPlaylistUrl = url.includes('playlist') || url.includes('list=');
+        
+        if (isPlaylistUrl) {
+            // Show global progress bar
+            showGlobalProgress();
+        }
+
+        try {
+            const formData = new FormData(form);
+            const response = await fetchWithCsrf('/add-music', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                // Hide global progress bar
+                hideGlobalProgress();
+                
+                // Check if this is a playlist response
+                if (data.playlist_info) {
+                    const info = data.playlist_info;
+                    messageDiv.innerHTML = `
+                        <div class="playlist-success">
+                            <h4>✅ Playlist "${info.playlist_title}" đã được xử lý</h4>
+                            <ul>
+                                <li>📊 Tổng số bài hát: ${info.total_tracks}</li>
+                                <li>✅ Đã thêm: ${info.added_tracks} bài hát</li>
+                                ${info.skipped_tracks > 0 ? `<li>⏭️ Đã bỏ qua: ${info.skipped_tracks} bài hát (đã tồn tại)</li>` : ''}
+                                ${info.failed_tracks > 0 ? `<li>❌ Thất bại: ${info.failed_tracks} bài hát</li>` : ''}
+                            </ul>
+                        </div>
+                    `;
+                    messageDiv.className = 'form-message success';
+                } else {
+                    messageDiv.textContent = data.message;
+                    messageDiv.className = 'form-message success';
+                }
+                
+                form.reset();
+                
+                // Reload page after showing results
+                setTimeout(() => {
+                    window.location.reload();
+                }, 3000);
+                
+            } else {
+                hideGlobalProgress();
+                messageDiv.textContent = data.message || 'Operation failed';
+                messageDiv.className = 'form-message error';
+            }
+        } catch (error) {
+            console.error('Add music error:', error);
+            hideGlobalProgress();
+            messageDiv.textContent = 'Network error occurred';
+            messageDiv.className = 'form-message error';
+        } finally {
+            setLoading(submitButton, false);
+        }
+    });
+}
+
+// Show global progress bar
+function showGlobalProgress() {
+    const progressContainer = document.getElementById('global-progress');
+    if (progressContainer) {
+        progressContainer.style.display = 'block';
+        
+        // Reset progress
+        const progressFill = document.getElementById('global-progress-fill');
+        const progressPercentage = document.getElementById('global-progress-percentage');
+        const progressCurrentSong = document.getElementById('progress-current-song');
+        const progressCount = document.getElementById('progress-count');
+        
+        if (progressFill) progressFill.style.width = '0%';
+        if (progressPercentage) progressPercentage.textContent = '0%';
+        if (progressCurrentSong) progressCurrentSong.textContent = 'Đang chuẩn bị...';
+        if (progressCount) progressCount.textContent = '0/0';
+    }
+}
+
+// Hide global progress bar
+function hideGlobalProgress() {
+    const progressContainer = document.getElementById('global-progress');
+    if (progressContainer) {
+        progressContainer.style.display = 'none';
+    }
+}
+
+// Update global progress bar
+function updateGlobalProgress(data) {
+    const progressFill = document.getElementById('global-progress-fill');
+    const progressPercentage = document.getElementById('global-progress-percentage');
+    const progressCurrentSong = document.getElementById('progress-current-song');
+    const progressCount = document.getElementById('progress-count');
+    
+    if (!progressFill || !progressPercentage) return;
+    
+    if (data.status === 'analyzing') {
+        progressCurrentSong.textContent = data.message;
+        progressCount.textContent = '0/0';
+    } else if (data.status === 'downloading') {
+        const percentage = data.total > 0 ? Math.round((data.current / data.total) * 100) : 0;
+        progressFill.style.width = `${percentage}%`;
+        progressPercentage.textContent = `${percentage}%`;
+        progressCurrentSong.textContent = data.current_song || data.message;
+        progressCount.textContent = `${data.current}/${data.total}`;
+    } else if (data.status === 'completed') {
+        progressFill.style.width = '100%';
+        progressPercentage.textContent = '100%';
+        progressCurrentSong.textContent = data.message;
+        progressCount.textContent = `${data.downloaded}/${data.total}`;
+        
+        // Hide after a delay
+        setTimeout(() => {
+            hideGlobalProgress();
+        }, 2000);
+    }
+}
+
+
+// Helper function to create message div if it doesn't exist
+function createMessageDiv(form) {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'form-message';
+    form.appendChild(messageDiv);
+    return messageDiv;
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     socket = io();
+    
+    // Check if there's an active download on page load
+    const progressContainer = document.getElementById('global-progress');
+    if (progressContainer && progressContainer.style.display === 'block') {
+        // There's an active download, connect to progress updates immediately
+        console.log('Active download detected on page load');
+    }
+    
     // Initialize drag-and-drop functionality
     initDragAndDrop();
     const progress = document.getElementById('song-progress');
@@ -241,6 +394,23 @@ document.addEventListener('DOMContentLoaded', function () {
     // Socket event listeners
     socket.on('schedule_triggered', function(data) {
         window.location.reload();
+    });
+
+    // Listen for download progress updates
+    socket.on('download_progress', function(data) {
+        updateGlobalProgress(data);
+    });
+
+    // Listen for individual song additions during playlist download
+    socket.on('song_added', function(data) {
+        console.log('Song added to playlist:', data.title);
+        // Could add visual notification here or refresh part of the playlist
+        // For now, we'll let the final reload handle the full refresh
+    });
+
+    // Listen for playlist progress updates
+    socket.on('playlist_progress', function(data) {
+        updatePlaylistProgress(data);
     });
 
     socket.on('playback_update', function (data) {
@@ -417,7 +587,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    handleForm('addMusicForm', '/add-music', () => window.location.reload());
+    handleAddMusicForm();
     handleForm('uploadForm', '/upload-music', () => window.location.reload());
     handleForm('add-schedule-form', '/add-schedule', (data) => {
         if (data.schedule) {
@@ -441,34 +611,6 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    // Priority input handling
-    document.querySelectorAll('.priority-input').forEach(input => {
-        let timeout;
-        input.addEventListener('change', function() {
-            const songId = this.closest('.song-item').dataset.id;
-            clearTimeout(timeout);
-            
-            timeout = setTimeout(async () => {
-                try {
-                    const formData = new FormData();
-                    formData.append('priority', this.value);
-                    
-                    const response = await fetchWithCsrf(`/update-priority/${songId}`, {
-                        method: 'POST',
-                        body: formData
-                    });
-                    const data = await response.json();
-                    
-                    if (!data.success) {
-                        showError(this.closest('.song-item'), data.message || 'Failed to update priority');
-                    }
-                } catch (error) {
-                    console.error('Priority update error:', error);
-                    showError(this.closest('.song-item'), 'Network error occurred');
-                }
-            }, 500);
-        });
-    });
 
     // Drag and drop for song reordering
     function initDragAndDrop() {
