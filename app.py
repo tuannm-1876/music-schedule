@@ -267,11 +267,59 @@ def get_audio_duration(filename):
         return 0
 
 def update_ytdlp():
+    """Update yt-dlp với nhiều phương pháp tương thích với Raspberry Pi"""
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"])
-        logger.info("yt-dlp updated successfully")
+        venv_python = os.path.join(BASE_DIR, "venv", "bin", "python")
+        venv_pip = os.path.join(BASE_DIR, "venv", "bin", "pip")
+        
+        if os.path.exists(venv_python) and os.path.exists(venv_pip):
+            logger.info("Attempting to update yt-dlp using virtual environment")
+            subprocess.check_call([venv_pip, "install", "--upgrade", "yt-dlp"])
+            logger.info("yt-dlp updated successfully using virtual environment")
+            return
+            
+        try:
+            logger.info("Attempting to update yt-dlp for user")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "--upgrade", "yt-dlp"])
+            logger.info("yt-dlp updated successfully for user")
+            return
+        except subprocess.CalledProcessError:
+            pass
+            
+        try:
+            logger.info("Attempting to update yt-dlp with --break-system-packages")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--break-system-packages", "--upgrade", "yt-dlp"])
+            logger.info("yt-dlp updated successfully with --break-system-packages")
+            return
+        except subprocess.CalledProcessError:
+            pass
+            
+        try:
+            logger.info("Attempting to update yt-dlp using apt")
+            subprocess.check_call(["sudo", "apt", "update"])
+            subprocess.check_call(["sudo", "apt", "install", "-y", "yt-dlp"])
+            logger.info("yt-dlp updated successfully using apt")
+            return
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+            
+        logger.warning("All update methods failed. yt-dlp update skipped.")
+        
     except Exception as e:
         logger.error(f"Error updating yt-dlp: {e}")
+
+def get_ytdlp_version():
+    """Get current yt-dlp version"""
+    try:
+        result = subprocess.run([sys.executable, "-m", "yt_dlp", "--version"],
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            return result.stdout.strip()
+        else:
+            return "Unknown"
+    except Exception as e:
+        logger.error(f"Error getting yt-dlp version: {e}")
+        return "Unknown"
 
 def get_next_scheduled_song():
     now = datetime.now()
@@ -632,7 +680,8 @@ def index():
                                current_position=current_pos,
                                is_playing=is_playing,
                                volume=volume,
-                               disk_usage=disk_usage)
+                               disk_usage=disk_usage,
+                               ytdlp_version=get_ytdlp_version())
     except Exception as e:
         logger.error(f"Error rendering index page: {e}")
         return "Internal Server Error", 500
@@ -826,6 +875,18 @@ def upload_music():
         if os.path.exists(full_filepath):
             os.remove(full_filepath)
         return jsonify({'success': False, 'message': 'Error uploading file'}), 500
+
+@app.route('/update-ytdlp', methods=['POST'])
+@login_required
+def update_ytdlp_manual():
+    """Manual update yt-dlp"""
+    try:
+        logger.info("Manual yt-dlp update requested")
+        update_ytdlp()
+        return jsonify({'success': True, 'message': 'yt-dlp updated successfully'})
+    except Exception as e:
+        logger.error(f"Error manually updating yt-dlp: {e}")
+        return jsonify({'success': False, 'message': 'Failed to update yt-dlp'}), 500
 
 @app.route('/update-priority/<int:id>', methods=['POST'])
 @login_required

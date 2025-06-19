@@ -369,6 +369,54 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    // Volume control buttons
+    const volumeDownBtn = document.getElementById('volume-down-btn');
+    const volumeUpBtn = document.getElementById('volume-up-btn');
+
+    if (volumeDownBtn && volumeSlider) {
+        volumeDownBtn.addEventListener('click', function() {
+            const currentVolume = parseInt(volumeSlider.value);
+            const newVolume = Math.max(0, currentVolume - 5); // Decrease by 5%
+            volumeSlider.value = newVolume;
+            socket.emit('set_volume', { value: newVolume });
+            
+            // Update button states
+            updateVolumeButtonStates(newVolume);
+        });
+    }
+
+    if (volumeUpBtn && volumeSlider) {
+        volumeUpBtn.addEventListener('click', function() {
+            const currentVolume = parseInt(volumeSlider.value);
+            const newVolume = Math.min(100, currentVolume + 5); // Increase by 5%
+            volumeSlider.value = newVolume;
+            socket.emit('set_volume', { value: newVolume });
+            
+            // Update button states
+            updateVolumeButtonStates(newVolume);
+        });
+    }
+
+    // Function to update volume button states
+    function updateVolumeButtonStates(volume) {
+        if (volumeDownBtn) {
+            volumeDownBtn.disabled = volume <= 0;
+        }
+        if (volumeUpBtn) {
+            volumeUpBtn.disabled = volume >= 100;
+        }
+    }
+
+    // Initialize button states
+    if (volumeSlider) {
+        updateVolumeButtonStates(parseInt(volumeSlider.value));
+        
+        // Also update states when slider changes
+        volumeSlider.addEventListener('input', function() {
+            updateVolumeButtonStates(parseInt(this.value));
+        });
+    }
+
     handleForm('addMusicForm', '/add-music', () => window.location.reload());
     handleForm('uploadForm', '/upload-music', () => window.location.reload());
     handleForm('add-schedule-form', '/add-schedule', (data) => {
@@ -569,4 +617,114 @@ document.addEventListener('DOMContentLoaded', function () {
             window.location.reload();
         }
     }, 60000);
+
+    // yt-dlp update button handler
+    const updateYtdlpBtn = document.getElementById('update-ytdlp-btn');
+    if (updateYtdlpBtn) {
+        updateYtdlpBtn.addEventListener('click', async function() {
+            const button = this;
+            const icon = button.querySelector('i');
+            const originalText = button.textContent;
+            
+            // Show loading state
+            button.disabled = true;
+            icon.className = 'fas fa-sync-alt fa-spin';
+            button.innerHTML = '<i class="fas fa-sync-alt fa-spin"></i> Updating...';
+            
+            try {
+                const response = await fetchWithCsrf('/update-ytdlp', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Show success message briefly
+                    button.innerHTML = '<i class="fas fa-check"></i> Updated!';
+                    setTimeout(() => {
+                        window.location.reload(); // Refresh to show new version
+                    }, 1500);
+                } else {
+                    showError(button.closest('.ytdlp-container'), data.message || 'Failed to update yt-dlp');
+                    // Reset button
+                    button.disabled = false;
+                    button.innerHTML = originalText;
+                }
+            } catch (error) {
+                console.error('Update yt-dlp error:', error);
+                showError(button.closest('.ytdlp-container'), 'Network error occurred');
+                // Reset button
+                button.disabled = false;
+                button.innerHTML = originalText;
+            }
+        });
+    }
+
+    // Schedule form toggle functionality
+    const toggleScheduleBtn = document.getElementById('toggle-schedule-form');
+    const scheduleForm = document.getElementById('add-schedule-form');
+    const cancelScheduleBtn = document.getElementById('cancel-schedule-form');
+
+    if (toggleScheduleBtn && scheduleForm) {
+        toggleScheduleBtn.addEventListener('click', function() {
+            const isCollapsed = scheduleForm.classList.contains('collapsed');
+            
+            if (isCollapsed) {
+                // Show form
+                scheduleForm.classList.remove('collapsed');
+                this.classList.add('active');
+                this.innerHTML = '<i class="fas fa-plus"></i> Cancel';
+            } else {
+                // Hide form
+                scheduleForm.classList.add('collapsed');
+                this.classList.remove('active');
+                this.innerHTML = '<i class="fas fa-plus"></i> Add New';
+                // Reset form
+                scheduleForm.reset();
+            }
+        });
+
+        if (cancelScheduleBtn) {
+            cancelScheduleBtn.addEventListener('click', function() {
+                // Hide form
+                scheduleForm.classList.add('collapsed');
+                toggleScheduleBtn.classList.remove('active');
+                toggleScheduleBtn.innerHTML = '<i class="fas fa-plus"></i> Add New';
+                // Reset form
+                scheduleForm.reset();
+            });
+        }
+    }
+
+    // Generic collapsible sections functionality
+    const toggleSectionBtns = document.querySelectorAll('.toggle-section-btn');
+    
+    toggleSectionBtns.forEach(btn => {
+        btn.addEventListener('click', function() {
+            const targetId = this.getAttribute('data-target');
+            const targetContent = document.getElementById(targetId);
+            const isCollapsed = targetContent.classList.contains('collapsed');
+            
+            if (isCollapsed) {
+                // Show content
+                targetContent.classList.remove('collapsed');
+                this.classList.add('active');
+            } else {
+                // Hide content
+                targetContent.classList.add('collapsed');
+                this.classList.remove('active');
+            }
+        });
+    });
+
+    // Also make section headers clickable
+    const sectionHeaders = document.querySelectorAll('.collapsible-section .section-header');
+    
+    sectionHeaders.forEach(header => {
+        header.addEventListener('click', function() {
+            const toggleBtn = this.querySelector('.toggle-section-btn');
+            if (toggleBtn) {
+                toggleBtn.click();
+            }
+        });
+    });
 });

@@ -942,3 +942,329 @@ button.loading::after {
         gap: 5px;
     }
 }
+
+/* yt-dlp Information Styles */
+.ytdlp-container {
+    background: var(--bg-primary);
+    padding: 20px;
+    border-radius: var(--border-radius);
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+}
+
+.ytdlp-container h2 {
+    margin-bottom: 15px;
+    color: var(--text-primary);
+}
+
+.ytdlp-info {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    flex-wrap: wrap;
+}
+
+.ytdlp-version {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 0.95em;
+}
+
+.ytdlp-version i {
+    color: var(--info-color);
+}
+
+.update-btn {
+    background: var(--info-color);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    transition: background-color var(--transition-speed) ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.9em;
+}
+
+.update-btn:hover {
+    background: var(--info-hover);
+}
+
+.update-btn:disabled {
+    background: var(--text-secondary);
+    cursor: not-allowed;
+}
+
+.update-btn i.fa-spin {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+@media (max-width: 600px) {
+    .ytdlp-info {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
+
+/* Schedule Header with Toggle */
+.schedule-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.toggle-form-btn {
+    background: var(--primary-color);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    transition: background-color var(--transition-speed) ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.9em;
+}
+
+.toggle-form-btn:hover {
+    background: var(--primary-hover);
+}
+
+.toggle-form-btn i {
+    transition: transform var(--transition-speed) ease;
+}
+
+.toggle-form-btn.active i {
+    transform: rotate(45deg);
+}
+
+/* Collapsible Schedule Form */
+.add-schedule.collapsed {
+    max-height: 0;
+    overflow: hidden;
+    opacity: 0;
+    transition: max-height 0.3s ease, opacity 0.3s ease;
+    margin-bottom: 0;
+}
+
+.add-schedule:not(.collapsed) {
+    max-height: 500px;
+    opacity: 1;
+    transition: max-height 0.3s ease, opacity 0.3s ease;
+    margin-bottom: 20px;
+}
+
+.form-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.cancel-btn {
+    background: var(--text-secondary);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    transition: background-color var(--transition-speed) ease;
+    font-size: 0.9em;
+}
+
+.cancel-btn:hover {
+    background: var(--error-color);
+}
+
+@media (max-width: 600px) {
+    .schedule-header {
+        flex-direction: column;
+        gap: 10px;
+        align-items: flex-start;
+    }
+    
+    .form-actions {
+        flex-direction: column;
+        width: 100%;
+    }
+    
+    .form-actions button {
+        width: 100%;
+    }
+}
+
+/* Generic Collapsible Sections */
+.collapsible-section {
+    background: var(--bg-primary);
+    padding: 20px;
+    border-radius: var(--border-radius);
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0;
+    cursor: pointer;
+}
+
+.section-header h2 {
+    margin-bottom: 0;
+    color: var(--text-primary);
+}
+
+.toggle-section-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 1.2em;
+    cursor: pointer;
+    padding: 5px;
+    border-radius: 50%;
+    transition: all var(--transition-speed) ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+}
+
+.toggle-section-btn:hover {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.toggle-section-btn i {
+    transition: transform var(--transition-speed) ease;
+}
+
+.toggle-section-btn.active i {
+    transform: rotate(180deg);
+}
+
+.section-content {
+    transition: all 0.3s ease;
+    overflow: hidden;
+}
+
+.section-content.collapsed {
+    max-height: 0;
+    opacity: 0;
+    margin-top: 0;
+    padding-top: 0;
+}
+
+.section-content:not(.collapsed) {
+    max-height: 1000px;
+    opacity: 1;
+    margin-top: 20px;
+    padding-top: 0;
+}
+
+/* Adjust existing containers for collapsible behavior */
+.collapsible-section.disk-usage-container,
+.collapsible-section.ytdlp-container,
+.collapsible-section.add-music {
+    padding: 15px 20px;
+}
+
+.collapsible-section .section-header + .section-content {
+    padding-top: 0;
+}
+
+@media (max-width: 600px) {
+    .section-header {
+        padding: 5px 0;
+    }
+    
+    .toggle-section-btn {
+        width: 28px;
+        height: 28px;
+        font-size: 1em;
+    }
+    
+    .collapsible-section {
+        padding: 15px;
+        margin-bottom: 15px;
+    }
+}
+
+/* Volume Control Buttons */
+.volume-btn {
+    background: var(--bg-secondary);
+    border: 2px solid var(--border-color);
+    color: var(--text-primary);
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: all var(--transition-speed) ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1em;
+    font-weight: bold;
+    margin: 0 6px;
+    min-width: 40px;
+    min-height: 40px;
+    flex-shrink: 0;
+}
+
+.volume-btn:hover {
+    background: var(--primary-color);
+    color: white;
+    border-color: var(--primary-color);
+    transform: scale(1.1);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+
+.volume-btn:active {
+    transform: scale(0.9);
+}
+
+.volume-btn:disabled {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    border-color: var(--border-color);
+    cursor: not-allowed;
+    transform: none;
+    opacity: 0.6;
+}
+
+.volume-btn i {
+    font-size: 0.9em;
+}
+
+/* Ensure volume controls are properly aligned */
+.volume-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+@media (max-width: 600px) {
+    .volume-btn {
+        width: 36px;
+        height: 36px;
+        min-width: 36px;
+        min-height: 36px;
+        font-size: 0.9em;
+        margin: 0 4px;
+    }
+    
+    .volume-controls {
+        gap: 6px;
+    }
+}

@@ -46,6 +46,9 @@
         </div>
 
         <div class="volume-controls">
+          <button id="volume-down-btn" class="volume-btn" aria-label="Decrease volume">
+            <i class="fas fa-minus"></i>
+          </button>
           <i class="fas fa-volume-down" aria-hidden="true"></i>
           <input
             type="range"
@@ -56,6 +59,9 @@
             aria-label="Volume control"
           />
           <i class="fas fa-volume-up" aria-hidden="true"></i>
+          <button id="volume-up-btn" class="volume-btn" aria-label="Increase volume">
+            <i class="fas fa-plus"></i>
+          </button>
         </div>
 
         <div class="playback-controls">
@@ -68,10 +74,15 @@
         </div>
       </div>
 
-      <!-- Disk Usage Indicator -->
-      <div class="disk-usage-container" role="region" aria-label="Disk usage information">
-        <h2>Disk Usage</h2>
-        <div class="disk-usage-info">
+      <!-- Disk Usage Indicator (Collapsible) -->
+      <div class="disk-usage-container collapsible-section" role="region" aria-label="Disk usage information">
+        <div class="section-header">
+          <h2>Disk Usage</h2>
+          <button class="toggle-section-btn" data-target="disk-usage-content" aria-label="Toggle disk usage">
+            <i class="fas fa-chevron-down"></i>
+          </button>
+        </div>
+        <div class="disk-usage-info section-content collapsed" id="disk-usage-content">
           <div class="disk-usage-bar-container">
             <div class="disk-usage-bar">
               <div class="disk-usage-fill" style="width: {{ disk_usage.percentage_used }}%"></div>
@@ -91,6 +102,27 @@
         </div>
       </div>
 
+      <!-- yt-dlp Version and Update (Collapsible) -->
+      <div class="ytdlp-container collapsible-section" role="region" aria-label="yt-dlp information">
+        <div class="section-header">
+          <h2>yt-dlp Information</h2>
+          <button class="toggle-section-btn" data-target="ytdlp-content" aria-label="Toggle yt-dlp info">
+            <i class="fas fa-chevron-down"></i>
+          </button>
+        </div>
+        <div class="ytdlp-info section-content collapsed" id="ytdlp-content">
+          <div class="ytdlp-version">
+            <i class="fas fa-download"></i>
+            <span>Version: {{ ytdlp_version }}</span>
+          </div>
+          <button id="update-ytdlp-btn" class="update-btn">
+            <i class="fas fa-sync-alt"></i>
+            Update yt-dlp
+          </button>
+          <div class="error-message" role="alert"></div>
+        </div>
+      </div>
+
       {% if next_song %}
       <div class="next-schedule" role="region" aria-label="Next scheduled playback">
         <h2>Next Scheduled Playback</h2>
@@ -100,13 +132,20 @@
       {% endif %}
 
       <div class="schedule-management">
-        <h2>Schedule Times</h2>
-        <!-- Form for adding new schedule times -->
+        <div class="schedule-header">
+          <h2>Schedule Times</h2>
+          <button id="toggle-schedule-form" class="toggle-form-btn" aria-label="Toggle schedule form">
+            <i class="fas fa-plus"></i>
+            Add New
+          </button>
+        </div>
+        
+        <!-- Form for adding new schedule times (initially hidden) -->
         <form
           id="add-schedule-form"
           action="{{ url_for('add_schedule') }}"
           method="POST"
-          class="add-schedule"
+          class="add-schedule collapsed"
           data-csrf-token="{{ csrf_token() }}"
         >
           <div class="schedule-form">
@@ -143,7 +182,10 @@
                 Sun
               </label>
             </div>
-            <button type="submit">Add Schedule Time</button>
+            <div class="form-actions">
+              <button type="submit">Add Schedule Time</button>
+              <button type="button" id="cancel-schedule-form" class="cancel-btn">Cancel</button>
+            </div>
             <div id="schedule-error" class="error-message" role="alert"></div>
           </div>
         </form>
@@ -190,39 +232,47 @@
         </div>
       </div>
 
-      <div class="add-music">
-        <h2>Add New Music</h2>
-
-        <div class="youtube-form">
-          <h3>From YouTube</h3>
-          <form id="addMusicForm" data-csrf-token="{{ csrf_token() }}">
-            <input
-              type="text"
-              id="youtubeUrl"
-              name="url"
-              placeholder="Enter YouTube URL"
-              required
-              pattern="^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+"
-              aria-label="YouTube URL"
-            />
-            <button type="submit">Add from YouTube</button>
-            <div class="error-message" role="alert"></div>
-          </form>
+      <div class="add-music collapsible-section">
+        <div class="section-header">
+          <h2>Add New Music</h2>
+          <button class="toggle-section-btn" data-target="add-music-content" aria-label="Toggle add music">
+            <i class="fas fa-chevron-down"></i>
+          </button>
         </div>
+        
+        <div class="section-content collapsed" id="add-music-content">
+          <div class="youtube-form">
+            <h3>From YouTube / YouTube Music</h3>
+            <form id="addMusicForm" data-csrf-token="{{ csrf_token() }}">
+              <input
+                type="text"
+                id="youtubeUrl"
+                name="url"
+                placeholder="Enter YouTube/YouTube Music URL"
+                required
+                pattern="^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com|youtube\.com\/shorts|m\.youtube\.com)\/.+"
+                aria-label="YouTube/YouTube Music URL"
+              />
+              <button type="submit">Add from YouTube</button>
+              <div class="error-message" role="alert"></div>
+            </form>
+          </div>
 
-        <div class="upload-form">
-          <h3>Upload File</h3>
-          <form id="uploadForm" enctype="multipart/form-data" data-csrf-token="{{ csrf_token() }}">
-            <input 
-              type="file" 
-              id="musicFile" 
-              accept=".mp3,.wav,.ogg" 
-              required
-              aria-label="Select music file"
-            />
-            <button type="submit">Upload Music</button>
-            <div class="error-message" role="alert"></div>
-          </form>
+          <div class="upload-form">
+            <h3>Upload File</h3>
+            <form id="uploadForm" enctype="multipart/form-data" data-csrf-token="{{ csrf_token() }}">
+              <input
+                type="file"
+                id="musicFile"
+                name="file"
+                accept=".mp3,.wav,.ogg"
+                required
+                aria-label="Select music file"
+              />
+              <button type="submit">Upload Music</button>
+              <div class="error-message" role="alert"></div>
+            </form>
+          </div>
         </div>
       </div>
 
