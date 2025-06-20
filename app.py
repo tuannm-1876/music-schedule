@@ -51,7 +51,8 @@ download_state = {
     'current': 0,
     'total': 0,
     'current_song': '',
-    'playlist_title': ''
+    'playlist_title': '',
+    'cancelled': False
 }
 
 app = Flask(__name__)
@@ -109,17 +110,18 @@ pygame.mixer.music.set_volume(DEFAULT_VOLUME)
 # Initialize scheduler
 scheduler = None
 # Download state management functions
-def set_download_state(status, message='', current=0, total=0, current_song='', playlist_title=''):
+def set_download_state(status, message='', current=0, total=0, current_song='', playlist_title='', cancelled=False):
     """Update global download state"""
     global download_state
     download_state.update({
-        'active': status != 'completed' and status != 'error',
+        'active': status != 'completed' and status != 'error' and status != 'cancelled',
         'status': status,
         'message': message,
         'current': current,
         'total': total,
         'current_song': current_song,
-        'playlist_title': playlist_title
+        'playlist_title': playlist_title,
+        'cancelled': cancelled
     })
     logger.info(f"Download state updated: {download_state}")
 
@@ -137,8 +139,25 @@ def clear_download_state():
         'current': 0,
         'total': 0,
         'current_song': '',
-        'playlist_title': ''
+        'playlist_title': '',
+        'cancelled': False
     }
+
+def cancel_download():
+    """Cancel current download"""
+    global download_state
+    if download_state['active']:
+        download_state['cancelled'] = True
+        set_download_state('cancelled', 'Download has been cancelled', download_state['current'], download_state['total'], cancelled=True)
+        logger.info("Download cancelled by user")
+        socketio.emit('download_progress', {
+            'status': 'cancelled',
+            'message': 'Download has been cancelled',
+            'current': download_state['current'],
+            'total': download_state['total']
+        })
+        return True
+    return False
 
 def init_scheduler():
     global scheduler
@@ -349,7 +368,7 @@ def get_audio_duration(filename):
         return 0
 
 def update_ytdlp():
-    """Update yt-dlp với nhiều phương pháp tương thích với Raspberry Pi"""
+    """Update yt-dlp with multiple methods compatible with Raspberry Pi"""
     try:
         venv_python = os.path.join(BASE_DIR, "venv", "bin", "python")
         venv_pip = os.path.join(BASE_DIR, "venv", "bin", "pip")
@@ -705,10 +724,10 @@ def download_playlist(url):
         logger.info(f"Processing playlist: {url}")
         
         # Update state and emit start event
-        set_download_state('analyzing', 'Đang phân tích playlist...', 0, 0)
+        set_download_state('analyzing', 'Analyzing playlist...', 0, 0)
         socketio.emit('download_progress', {
             'status': 'analyzing',
-            'message': 'Đang phân tích playlist...',
+            'message': 'Analyzing playlist...',
             'current': 0,
             'total': 0
         })
@@ -723,14 +742,14 @@ def download_playlist(url):
             playlist_info = ydl.extract_info(url, download=False)
             
         if 'entries' not in playlist_info:
-            raise Exception("Không thể trích xuất danh sách bài hát từ playlist")
+            raise Exception("Unable to extract song list from playlist")
             
         entries = playlist_info['entries']
         if not entries:
-            raise Exception("Playlist trống hoặc không thể truy cập")
+            raise Exception("Playlist is empty or inaccessible")
             
         playlist_title = playlist_info.get('title', 'Unknown')
-        logger.info(f"Tìm thấy {len(entries)} bài hát trong playlist: {playlist_title}")
+        logger.info(f"Found {len(entries)} songs in playlist: {playlist_title}")
         
         
         downloaded_songs = []
@@ -738,6 +757,26 @@ def download_playlist(url):
         
         # Download each track individually
         for i, entry in enumerate(entries, 1):
+            # Check if download has been cancelled
+            if download_state.get('cancelled', False):
+                logger.info("Download cancelled by user, stopping playlist download")
+                clear_download_state()
+                socketio.emit('download_progress', {
+                    'status': 'cancelled',
+                    'message': 'Download has been cancelled',
+                    'current': i-1,
+                    'total': len(entries)
+                })
+                return {
+                    'playlist_title': playlist_info.get('title', 'Unknown Playlist'),
+                    'total_tracks': len(entries),
+                    'downloaded_tracks': len(downloaded_songs),
+                    'failed_tracks': len(failed_downloads),
+                    'songs': downloaded_songs,
+                    'failed_songs': failed_downloads,
+                    'cancelled': True
+                }
+            
             if not entry:
                 continue
                 
@@ -745,13 +784,13 @@ def download_playlist(url):
                 video_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry['id']}"
                 video_title = entry.get('title', f'Unknown Track {i}')
                 
-                logger.info(f"Đang tải bài {i}/{len(entries)}: {video_title}")
+                logger.info(f"Downloading track {i}/{len(entries)}: {video_title}")
                 
                 # Update state and emit progress for current track
-                set_download_state('downloading', f'Đang tải bài {i}/{len(entries)}', i, len(entries), video_title, playlist_title)
+                set_download_state('downloading', f'Downloading track {i}/{len(entries)}', i, len(entries), video_title, playlist_title)
                 socketio.emit('download_progress', {
                     'status': 'downloading',
-                    'message': f'Đang tải bài {i}/{len(entries)}',
+                    'message': f'Downloading track {i}/{len(entries)}',
                     'current_song': video_title,
                     'current': i,
                     'total': len(entries)
@@ -774,7 +813,7 @@ def download_playlist(url):
                 # Check if song already exists
                 mp3_file = os.path.join(MUSIC_DIR, f'{normalized_title}.mp3')
                 if os.path.exists(mp3_file):
-                    logger.info(f"Bài hát đã tồn tại, bỏ qua: {actual_title}")
+                    logger.info(f"Song already exists, skipping: {actual_title}")
                     continue
                 
                 # Download the track
@@ -794,7 +833,7 @@ def download_playlist(url):
                     ydl_download.download([video_url])
                 
                 if not os.path.exists(mp3_file):
-                    raise Exception(f"File không được tạo: {mp3_file}")
+                    raise Exception(f"File was not created: {mp3_file}")
                     
                 actual_filename = os.path.relpath(mp3_file, BASE_DIR)
                 
@@ -824,7 +863,7 @@ def download_playlist(url):
                             # Emit update to refresh UI
                             socketio.emit('song_added', {
                                 'title': actual_title,
-                                'message': f'Đã thêm bài hát: {actual_title}'
+                                'message': f'Added song: {actual_title}'
                             })
                         else:
                             logger.info(f"Song already exists in database: {actual_title}")
@@ -837,10 +876,10 @@ def download_playlist(url):
                     'duration': duration
                 })
                 
-                logger.info(f"Đã tải thành công: {actual_title}")
+                logger.info(f"Successfully downloaded: {actual_title}")
                 
             except Exception as e:
-                logger.error(f"Lỗi khi tải bài {i} ({video_title}): {e}")
+                logger.error(f"Error downloading track {i} ({video_title}): {e}")
                 failed_downloads.append({
                     'title': video_title,
                     'error': str(e)
@@ -856,13 +895,13 @@ def download_playlist(url):
             'failed_songs': failed_downloads
         }
         
-        logger.info(f"Hoàn thành tải playlist: {result['downloaded_tracks']}/{result['total_tracks']} bài hát thành công")
+        logger.info(f"Completed playlist download: {result['downloaded_tracks']}/{result['total_tracks']} songs successful")
         
         # Clear state and emit completion event
         clear_download_state()
         socketio.emit('download_progress', {
             'status': 'completed',
-            'message': f'Hoàn thành! Đã tải {result["downloaded_tracks"]}/{result["total_tracks"]} bài hát',
+            'message': f'Completed! Downloaded {result["downloaded_tracks"]}/{result["total_tracks"]} songs',
             'current': result['total_tracks'],
             'total': result['total_tracks'],
             'downloaded': result['downloaded_tracks'],
@@ -1082,7 +1121,7 @@ def add_music():
         if is_playlist_url(url):
             socketio.emit('download_progress', {
                 'status': 'starting',
-                'message': 'Bắt đầu xử lý playlist...',
+                'message': 'Starting playlist processing...',
                 'current': 0,
                 'total': 0
             })
@@ -1094,11 +1133,19 @@ def add_music():
             playlist_title = music_info['playlist_title']
             downloaded_songs = music_info['songs']
             failed_songs = music_info['failed_songs']
+            cancelled = music_info.get('cancelled', False)
+            
+            if cancelled:
+                return jsonify({
+                    'success': True,
+                    'message': f"Playlist download '{playlist_title}' was cancelled. Downloaded {len(downloaded_songs)} songs.",
+                    'cancelled': True
+                })
             
             if not downloaded_songs:
-                error_msg = f"Không thể tải bài hát nào từ playlist '{playlist_title}'"
+                error_msg = f"Unable to download any songs from playlist '{playlist_title}'"
                 if failed_songs:
-                    error_msg += f". Lỗi: {len(failed_songs)} bài hát thất bại"
+                    error_msg += f". Error: {len(failed_songs)} songs failed"
                 return jsonify({'success': False, 'message': error_msg}), 400
             
             # Songs are already added to database during download process
@@ -1111,11 +1158,11 @@ def add_music():
             # Create response message
             message_parts = []
             if added_songs:
-                message_parts.append(f"Đã thêm {len(added_songs)} bài hát từ playlist '{playlist_title}'")
+                message_parts.append(f"Added {len(added_songs)} songs from playlist '{playlist_title}'")
             if skipped_songs:
-                message_parts.append(f"{len(skipped_songs)} bài hát đã tồn tại trong playlist")
+                message_parts.append(f"{len(skipped_songs)} songs already exist in playlist")
             if failed_songs:
-                message_parts.append(f"{len(failed_songs)} bài hát tải thất bại")
+                message_parts.append(f"{len(failed_songs)} songs failed to download")
             
             response_message = ". ".join(message_parts)
             
@@ -1453,6 +1500,20 @@ def get_download_state_api():
     except Exception as e:
         logger.error(f"Error getting download state: {e}")
         return jsonify({'success': False, 'message': 'Error retrieving download state'}), 500
+
+@app.route('/cancel-download', methods=['POST'])
+@login_required
+def cancel_download_api():
+    """API endpoint to cancel current download"""
+    try:
+        success = cancel_download()
+        if success:
+            return jsonify({'success': True, 'message': 'Download cancelled'})
+        else:
+            return jsonify({'success': False, 'message': 'No download in progress'}), 400
+    except Exception as e:
+        logger.error(f"Error cancelling download: {e}")
+        return jsonify({'success': False, 'message': 'Error cancelling download'}), 500
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():

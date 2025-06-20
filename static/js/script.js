@@ -263,12 +263,12 @@ function handleAddMusicForm() {
                     const info = data.playlist_info;
                     messageDiv.innerHTML = `
                         <div class="playlist-success">
-                            <h4>✅ Playlist "${info.playlist_title}" đã được xử lý</h4>
+                            <h4>✅ Playlist "${info.playlist_title}" processed successfully</h4>
                             <ul>
-                                <li>📊 Tổng số bài hát: ${info.total_tracks}</li>
-                                <li>✅ Đã thêm: ${info.added_tracks} bài hát</li>
-                                ${info.skipped_tracks > 0 ? `<li>⏭️ Đã bỏ qua: ${info.skipped_tracks} bài hát (đã tồn tại)</li>` : ''}
-                                ${info.failed_tracks > 0 ? `<li>❌ Thất bại: ${info.failed_tracks} bài hát</li>` : ''}
+                                <li>📊 Total tracks: ${info.total_tracks}</li>
+                                <li>✅ Added: ${info.added_tracks} songs</li>
+                                ${info.skipped_tracks > 0 ? `<li>⏭️ Skipped: ${info.skipped_tracks} songs (already exist)</li>` : ''}
+                                ${info.failed_tracks > 0 ? `<li>❌ Failed: ${info.failed_tracks} songs</li>` : ''}
                             </ul>
                         </div>
                     `;
@@ -301,6 +301,27 @@ function handleAddMusicForm() {
     });
 }
 
+// Cancel download function
+function cancelDownload() {
+    fetchWithCsrf('/cancel-download', {
+        method: 'POST'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            console.log('Download cancelled successfully');
+            // The progress will be hidden via socket event
+        } else {
+            console.error('Failed to cancel download:', data.message);
+            alert('Error cancelling download: ' + data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error cancelling download:', error);
+        alert('Error cancelling download');
+    });
+}
+
 // Show global progress bar
 function showGlobalProgress() {
     const progressContainer = document.getElementById('global-progress');
@@ -315,7 +336,7 @@ function showGlobalProgress() {
         
         if (progressFill) progressFill.style.width = '0%';
         if (progressPercentage) progressPercentage.textContent = '0%';
-        if (progressCurrentSong) progressCurrentSong.textContent = 'Đang chuẩn bị...';
+        if (progressCurrentSong) progressCurrentSong.textContent = 'Preparing...';
         if (progressCount) progressCount.textContent = '0/0';
     }
 }
@@ -353,6 +374,14 @@ function updateGlobalProgress(data) {
         progressCount.textContent = `${data.downloaded}/${data.total}`;
         
         // Hide after a delay
+        setTimeout(() => {
+            hideGlobalProgress();
+        }, 2000);
+    } else if (data.status === 'cancelled') {
+        progressCurrentSong.textContent = data.message;
+        progressCount.textContent = `${data.current}/${data.total}`;
+        
+        // Hide progress bar after a short delay
         setTimeout(() => {
             hideGlobalProgress();
         }, 2000);
@@ -564,6 +593,16 @@ document.addEventListener('DOMContentLoaded', function () {
             
             // Update button states
             updateVolumeButtonStates(newVolume);
+        });
+    }
+
+    // Cancel download button
+    const cancelDownloadBtn = document.getElementById('cancel-download-btn');
+    if (cancelDownloadBtn) {
+        cancelDownloadBtn.addEventListener('click', function() {
+            if (confirm('Are you sure you want to cancel this playlist download?')) {
+                cancelDownload();
+            }
         });
     }
 

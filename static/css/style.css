@@ -1430,6 +1430,13 @@ button.loading::after {
     margin-bottom: 12px;
 }
 
+.global-progress-container .progress-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+}
+
 .global-progress-container h3 {
     margin: 0;
     color: var(--primary-color);
@@ -1437,6 +1444,29 @@ button.loading::after {
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+.global-progress-container .cancel-btn {
+    background: #dc3545;
+    color: white;
+    border: none;
+    border-radius: var(--border-radius);
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.global-progress-container .cancel-btn:hover {
+    background: #c82333;
+    transform: translateY(-1px);
+}
+
+.global-progress-container .cancel-btn:active {
+    transform: translateY(0);
 }
 
 .global-progress-container .progress-details {
