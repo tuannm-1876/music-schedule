@@ -41,7 +41,7 @@ ALLOWED_EXTENSIONS = {'mp3', 'wav', 'ogg'}
 DEFAULT_VOLUME = 0.5
 BROADCAST_INTERVAL = 0.5
 UPDATE_YTDLP_HOUR = 1
-MAX_UPLOAD_SIZE = 16 * 1024 * 1024  # 16MB
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 
 # Global download state
 download_state = {
@@ -372,42 +372,52 @@ def update_ytdlp():
     try:
         venv_python = os.path.join(BASE_DIR, "venv", "bin", "python")
         venv_pip = os.path.join(BASE_DIR, "venv", "bin", "pip")
-        
+
         if os.path.exists(venv_python) and os.path.exists(venv_pip):
             logger.info("Attempting to update yt-dlp using virtual environment")
             subprocess.check_call([venv_pip, "install", "--upgrade", "yt-dlp"])
             logger.info("yt-dlp updated successfully using virtual environment")
             return
-            
-        try:
-            logger.info("Attempting to update yt-dlp for user")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "--upgrade", "yt-dlp"])
-            logger.info("yt-dlp updated successfully for user")
-            return
-        except subprocess.CalledProcessError:
-            pass
-            
+
+        # On modern Debian/Raspberry Pi OS, pip commands can fail with an
+        # 'externally-managed-environment' error. The following methods attempt to work around this.
+
+        # Method 1: Use pip with --break-system-packages. This is the direct override for the error.
         try:
             logger.info("Attempting to update yt-dlp with --break-system-packages")
             subprocess.check_call([sys.executable, "-m", "pip", "install", "--break-system-packages", "--upgrade", "yt-dlp"])
             logger.info("yt-dlp updated successfully with --break-system-packages")
             return
         except subprocess.CalledProcessError:
+            logger.warning("Update with --break-system-packages failed. Trying next method.")
             pass
-            
+
+        # Method 2: Try installing for the current user. This might also be blocked.
         try:
-            logger.info("Attempting to update yt-dlp using apt")
-            subprocess.check_call(["sudo", "apt", "update"])
-            subprocess.check_call(["sudo", "apt", "install", "-y", "yt-dlp"])
-            logger.info("yt-dlp updated successfully using apt")
+            logger.info("Attempting to update yt-dlp for user")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "--upgrade", "yt-dlp"])
+            logger.info("yt-dlp updated successfully for user")
+            return
+        except subprocess.CalledProcessError:
+            logger.warning("Update with --user failed. Trying next method.")
+            pass
+
+        # Method 3: Use the system package manager (apt).
+        # Note: This requires the user running the app to have passwordless sudo access.
+        try:
+            logger.info("Attempting to update yt-dlp using apt-get")
+            subprocess.check_call(["sudo", "apt-get", "update"])
+            subprocess.check_call(["sudo", "apt-get", "install", "-y", "yt-dlp"])
+            logger.info("yt-dlp updated successfully using apt-get")
             return
         except (subprocess.CalledProcessError, FileNotFoundError):
+            logger.warning("Update with apt-get failed. This may be due to permissions or apt-get not being found.")
             pass
-            
-        logger.warning("All update methods failed. yt-dlp update skipped.")
-        
+
+        logger.error("All update methods for yt-dlp have failed. Please update it manually.")
+
     except Exception as e:
-        logger.error(f"Error updating yt-dlp: {e}")
+        logger.error(f"An unexpected error occurred during yt-dlp update: {e}")
 
 def get_ytdlp_version():
     """Get current yt-dlp version"""

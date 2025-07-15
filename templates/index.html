@@ -316,7 +316,7 @@
         <div class="song-list" role="list" id="sortable-song-list">
           {% for song in songs %}
           <div
-            class="song-item"
+            class="song-item {% if song.last_played_at %}played{% endif %}"
             role="listitem"
             data-id="{{ song.id }}"
             data-duration="{{ song.duration }}"
@@ -328,6 +328,9 @@
               <i class="fas fa-grip-lines"></i>
             </div>
             <div class="song-info">
+              {% if song.last_played_at %}
+                <i class="fas fa-check-circle played-icon" title="Played on {{ song.last_played_at.strftime('%Y-%m-%d %H:%M') }} UTC" aria-label="Played"></i>
+              {% endif %}
               <span class="song-title">{{ song.title }}</span>
               <span class="song-source">({{ song.source }})</span>
               <span class="song-duration">{{ "%d:%02d"|format(song.duration//60, song.duration%60) }}</span>

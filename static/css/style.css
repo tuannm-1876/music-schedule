@@ -589,6 +589,28 @@ button:disabled {
     gap: 10px;
 }
 
+.song-item.played {
+    background-color: #e8f5e9; /* Light green */
+}
+
+.song-item.played .song-title {
+    color: #388e3c;
+    font-style: italic;
+}
+
+.played-icon {
+    color: var(--primary-color);
+    font-size: 1.1em;
+}
+
+@media (prefers-color-scheme: dark) {
+    .song-item.played {
+        background-color: #1c3b1e; /* Dark, subtle green */
+    }
+    .song-item.played .song-title {
+        color: #a5d6a7; /* Light green for text in dark mode */
+    }
+}
 
 /* Action Buttons */
 .toggle-btn, .delete-btn {
