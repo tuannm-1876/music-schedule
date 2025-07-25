@@ -464,7 +464,7 @@ h3 {
     border: 1px solid var(--border-color);
 }
 
-form:not(.add-schedule) {
+form:not(.add-schedule):not(.login-form) {
     display: flex;
     gap: 10px;
 }
@@ -679,7 +679,7 @@ button.loading::after {
         padding: 10px;
     }
 
-    form:not(.add-schedule) {
+    form:not(.add-schedule):not(.login-form) {
         flex-direction: column;
     }
 
@@ -808,6 +808,55 @@ button.loading::after {
     padding-bottom: 20px;
     transform: translateY(5px);
     background-color: var(--bg-secondary);
+}
+
+/* Playlist header with sort button */
+.playlist-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.playlist-header h2 {
+    margin-bottom: 0;
+}
+
+.sort-unplayed-btn {
+    background: var(--info-color);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: all var(--transition-speed) ease;
+    box-shadow: var(--shadow);
+}
+
+.sort-unplayed-btn:hover {
+    background: var(--info-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+
+.sort-unplayed-btn:active {
+    transform: translateY(0);
+    box-shadow: var(--shadow);
+}
+
+.sort-unplayed-btn:disabled {
+    background: var(--text-secondary);
+    cursor: not-allowed;
+    transform: none;
+    opacity: 0.6;
+}
+
+.sort-unplayed-btn i {
+    font-size: 16px;
 }
 
 .playlist-info {

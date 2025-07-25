@@ -20,7 +20,8 @@
     <style>
       .login-container {
         max-width: 400px;
-        margin: 100px auto;
+        width: 90%;
+        margin: 50px auto;
         padding: 30px;
         background-color: var(--bg-primary);
         border-radius: var(--border-radius);
@@ -40,37 +41,65 @@
       .login-title {
         text-align: center;
         margin-bottom: 30px;
+        font-size: 1.8rem;
+      }
+      
+      .login-form {
+        width: 100%;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center;
       }
       
       .login-form input[type="text"],
       .login-form input[type="password"] {
         display: block;
-        width: 250px;
-        padding: 8px 12px;
+        width: 100%;
+        max-width: 280px;
+        padding: 12px 16px;
         margin: 15px auto;
         border: 1px solid var(--border-color);
         border-radius: var(--border-radius);
         background-color: var(--bg-secondary);
         color: var(--text-primary);
-        font-size: 14px;
+        font-size: 16px;
+        box-sizing: border-box;
+        transition: all var(--transition-speed) ease;
+      }
+      
+      .login-form input[type="text"]:focus,
+      .login-form input[type="password"]:focus {
+        outline: none;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
+        transform: translateY(-1px);
       }
       
       .login-form button {
         display: block;
-        width: 250px;
-        padding: 8px 12px;
-        margin: 15px auto;
+        width: 100%;
+        max-width: 280px;
+        padding: 12px 16px;
+        margin: 20px auto;
         background-color: var(--primary-color);
         color: white;
         border: none;
         border-radius: var(--border-radius);
-        font-size: 14px;
+        font-size: 16px;
         font-weight: 500;
         cursor: pointer;
+        box-sizing: border-box;
+        transition: all var(--transition-speed) ease;
       }
       
       .login-form button:hover {
         background-color: var(--primary-hover);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+      }
+      
+      .login-form button:active {
+        transform: translateY(0);
       }
       
       .login-error {
@@ -78,6 +107,108 @@
         margin-bottom: 15px;
         text-align: center;
         font-weight: bold;
+        padding: 10px;
+        background-color: rgba(244, 67, 54, 0.1);
+        border-radius: var(--border-radius);
+        border: 1px solid var(--error-color);
+      }
+      
+      /* Responsive Design for Desktop */
+      @media (min-width: 768px) {
+        .login-container {
+          max-width: 450px;
+          margin: 80px auto;
+          padding: 40px;
+        }
+        
+        .login-title {
+          font-size: 2.2rem;
+          margin-bottom: 35px;
+        }
+        
+        .login-logo i {
+          font-size: 56px;
+          margin-bottom: 10px;
+        }
+        
+        .login-form input[type="text"],
+        .login-form input[type="password"] {
+          max-width: 320px;
+          padding: 14px 18px;
+          font-size: 16px;
+          margin: 18px auto;
+        }
+        
+        .login-form button {
+          max-width: 320px;
+          padding: 14px 18px;
+          font-size: 16px;
+          margin: 25px auto;
+        }
+      }
+      
+      /* Large Desktop */
+      @media (min-width: 1024px) {
+        .login-container {
+          max-width: 500px;
+          margin: 100px auto;
+          padding: 50px;
+        }
+        
+        .login-title {
+          font-size: 2.5rem;
+        }
+        
+        .login-logo i {
+          font-size: 64px;
+        }
+        
+        .login-form input[type="text"],
+        .login-form input[type="password"] {
+          max-width: 360px;
+          padding: 16px 20px;
+          font-size: 18px;
+          margin: 20px auto;
+        }
+        
+        .login-form button {
+          max-width: 360px;
+          padding: 16px 20px;
+          font-size: 18px;
+          margin: 25px auto;
+        }
+      }
+      
+      /* Small Mobile Adjustments */
+      @media (max-width: 480px) {
+        .login-container {
+          margin: 30px auto;
+          padding: 20px;
+          width: 95%;
+        }
+        
+        .login-title {
+          font-size: 1.6rem;
+        }
+        
+        .login-logo i {
+          font-size: 40px;
+        }
+        
+        .login-form input[type="text"],
+        .login-form input[type="password"] {
+          max-width: 100%;
+          margin: 12px auto;
+          padding: 10px 14px;
+          font-size: 16px;
+        }
+        
+        .login-form button {
+          max-width: 100%;
+          margin: 15px auto;
+          padding: 12px 14px;
+          font-size: 16px;
+        }
       }
     </style>
   </head>

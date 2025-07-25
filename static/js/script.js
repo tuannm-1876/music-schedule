@@ -908,4 +908,166 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
     });
+
+    // Sort Unplayed First button handler using socket
+    const sortUnplayedBtn = document.getElementById('sort-unplayed-btn');
+    if (sortUnplayedBtn) {
+        sortUnplayedBtn.addEventListener('click', function() {
+            const button = this;
+            const icon = button.querySelector('i');
+            
+            // Show loading state
+            setLoading(button, true);
+            icon.className = 'fas fa-sync fa-spin';
+            
+            // Emit socket event
+            socket.emit('sort_unplayed_first');
+        });
+    }
+
+    // Socket event listeners for sort functionality
+    socket.on('sort_completed', function(data) {
+        console.log('Sort completed:', data);
+        
+        // Reset button state
+        const sortBtn = document.getElementById('sort-unplayed-btn');
+        if (sortBtn) {
+            setLoading(sortBtn, false);
+            const icon = sortBtn.querySelector('i');
+            if (icon) {
+                icon.className = 'fas fa-sort-alpha-up';
+            }
+        }
+        
+        // Show success notification
+        showSortNotification(data.message, 'success');
+        
+        // Update playlist without page reload
+        updatePlaylistOrder(data.songs);
+    });
+
+    socket.on('sort_error', function(data) {
+        console.error('Sort error:', data);
+        
+        // Reset button state
+        const sortBtn = document.getElementById('sort-unplayed-btn');
+        if (sortBtn) {
+            setLoading(sortBtn, false);
+            const icon = sortBtn.querySelector('i');
+            if (icon) {
+                icon.className = 'fas fa-sort-alpha-up';
+            }
+        }
+        
+        // Show error notification
+        showSortNotification(data.message || 'Error sorting playlist', 'error');
+    });
+
+    // Function to show sort notifications
+    function showSortNotification(message, type = 'success') {
+        const notification = document.createElement('div');
+        notification.className = `sort-notification ${type}`;
+        
+        const icon = type === 'success' ? 'fas fa-check-circle' : 'fas fa-exclamation-circle';
+        const bgColor = type === 'success' ? 'rgba(76, 175, 80, 0.9)' : 'rgba(244, 67, 54, 0.9)';
+        
+        notification.innerHTML = `
+            <i class="${icon}"></i>
+            ${message}
+        `;
+        notification.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            background-color: ${bgColor};
+            color: white;
+            border-radius: 8px;
+            z-index: 1000;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 500;
+            animation: slideInRight 0.3s ease-out;
+        `;
+        
+        document.body.appendChild(notification);
+        
+        // Add animation keyframes if not already added
+        if (!document.querySelector('#sort-animation-styles')) {
+            const style = document.createElement('style');
+            style.id = 'sort-animation-styles';
+            style.textContent = `
+                @keyframes slideInRight {
+                    from { transform: translateX(100%); opacity: 0; }
+                    to { transform: translateX(0); opacity: 1; }
+                }
+                @keyframes slideOutRight {
+                    from { transform: translateX(0); opacity: 1; }
+                    to { transform: translateX(100%); opacity: 0; }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+        
+        // Remove notification after delay
+        setTimeout(() => {
+            notification.style.animation = 'slideOutRight 0.3s ease-in';
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, 300);
+        }, 3000);
+    }
+
+    // Function to update playlist order in real-time
+    function updatePlaylistOrder(songs) {
+        const songList = document.getElementById('sortable-song-list');
+        if (!songList || !songs) return;
+        
+        // Clear current list
+        songList.innerHTML = '';
+        
+        // Add songs in new order
+        songs.forEach(song => {
+            const songItem = document.createElement('div');
+            songItem.className = `song-item ${song.last_played_at ? 'played' : ''}`;
+            songItem.setAttribute('role', 'listitem');
+            songItem.setAttribute('data-id', song.id);
+            songItem.setAttribute('data-duration', song.duration);
+            songItem.setAttribute('data-title', song.title);
+            songItem.setAttribute('data-position', song.position);
+            songItem.setAttribute('draggable', 'true');
+            
+            const playedIcon = song.last_played_at ?
+                `<i class="fas fa-check-circle played-icon" title="Played on ${new Date(song.last_played_at).toLocaleString()}" aria-label="Played"></i>` : '';
+            
+            songItem.innerHTML = `
+                <div class="drag-handle" aria-hidden="true">
+                    <i class="fas fa-grip-lines"></i>
+                </div>
+                <div class="song-info">
+                    ${playedIcon}
+                    <span class="song-title">${song.title}</span>
+                    <span class="song-source">(${song.source})</span>
+                    <span class="song-duration">${song.duration_formatted}</span>
+                </div>
+                <div class="song-controls">
+                    <button class="play-btn" data-action="play" aria-label="Play ${song.title}">
+                        <i class="fas fa-play" aria-hidden="true"></i>
+                    </button>
+                    <button class="delete-btn" data-action="delete" aria-label="Delete ${song.title}">
+                        Delete
+                    </button>
+                </div>
+            `;
+            
+            songList.appendChild(songItem);
+        });
+        
+        // Re-initialize drag and drop for new elements
+        initDragAndDrop();
+    }
 });

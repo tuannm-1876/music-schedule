@@ -1490,6 +1490,63 @@ def reset_playlist_order():
         logger.error(f"Error in reset playlist order route: {e}")
         return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
 
+@socketio.on('sort_unplayed_first')
+def handle_sort_unplayed_first():
+    """Sort unplayed songs to the top of the playlist via socket"""
+    try:
+        with app.app_context():
+            with session_scope() as session:
+                # Get all songs
+                all_songs = session.query(Song).all()
+                
+                # Divide into 2 groups: unplayed and played
+                unplayed_songs = [song for song in all_songs if song.last_played_at is None]
+                played_songs = [song for song in all_songs if song.last_played_at is not None]
+                
+                # Sort unplayed songs by priority desc, id asc (to maintain add order)
+                unplayed_songs.sort(key=lambda x: (-x.priority, x.id))
+                
+                # Sort played songs by last_played_at asc (oldest played first)
+                played_songs.sort(key=lambda x: x.last_played_at)
+                
+                # Combine 2 groups: unplayed first, played after
+                sorted_songs = unplayed_songs + played_songs
+                
+                # Update position for all songs
+                for index, song in enumerate(sorted_songs):
+                    song.position = index
+                
+                logger.info(f"Sorted {len(unplayed_songs)} unplayed songs to top, {len(played_songs)} played songs to bottom")
+                
+                # Prepare song data for frontend
+                songs_data = []
+                for song in sorted_songs:
+                    songs_data.append({
+                        'id': song.id,
+                        'title': song.title,
+                        'source': song.source,
+                        'duration': song.duration,
+                        'position': song.position,
+                        'last_played_at': song.last_played_at.isoformat() if song.last_played_at else None,
+                        'duration_formatted': f"{song.duration//60}:{song.duration%60:02d}"
+                    })
+                
+                # Emit success with new song order
+                emit('sort_completed', {
+                    'success': True,
+                    'message': f'Moved {len(unplayed_songs)} unplayed songs to top',
+                    'unplayed_count': len(unplayed_songs),
+                    'played_count': len(played_songs),
+                    'songs': songs_data
+                })
+                
+    except Exception as e:
+        logger.error(f"Error sorting unplayed songs first: {e}")
+        emit('sort_error', {
+            'success': False,
+            'message': 'Error sorting playlist'
+        })
+
 @app.route('/get-disk-usage')
 @login_required
 def disk_usage_api():
