@@ -13,7 +13,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState('');
-  const { setSongs, setSchedules, setPlaybackState } = useSocket();
+  const { setSongs, setSchedules, setPlaybackState, setNextSchedule } = useSocket();
   const { addToast } = useToast();
 
   useEffect(() => {
@@ -28,6 +28,7 @@ function App() {
         if (data.is_authenticated) {
           setSongs(data.songs);
           setSchedules(data.schedules);
+          setNextSchedule(data.next_schedule);
           setPlaybackState({
             is_playing: data.is_playing,
             current_song_id: data.current_song_id,
@@ -59,6 +60,7 @@ function App() {
       const data: InitialState = response.data;
       setSongs(data.songs);
       setSchedules(data.schedules);
+      setNextSchedule(data.next_schedule);
       setPlaybackState({
         is_playing: data.is_playing,
         current_song_id: data.current_song_id,

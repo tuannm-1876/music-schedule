@@ -13,6 +13,7 @@ interface SocketContextType {
   setSongs: React.Dispatch<React.SetStateAction<Song[]>>;
   setSchedules: React.Dispatch<React.SetStateAction<Schedule[]>>;
   setPlaybackState: React.Dispatch<React.SetStateAction<PlaybackState>>;
+  setNextSchedule: React.Dispatch<React.SetStateAction<{ time: string; song_title: string } | null>>;
   togglePlayPause: () => void;
   stopMusic: () => void;
   setVolume: (volume: number) => void;
@@ -169,6 +170,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
         setSongs,
         setSchedules,
         setPlaybackState,
+        setNextSchedule,
         togglePlayPause,
         stopMusic,
         setVolume,

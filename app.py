@@ -103,8 +103,8 @@ def get_disk_usage():
             'percentage_used': 0
         }
 
-# Initialize pygame mixer for audio playback
-pygame.mixer.init()
+# Initialize pygame mixer for audio playback with larger buffer to prevent ALSA underrun
+pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
 pygame.mixer.music.set_volume(DEFAULT_VOLUME)
 
 # Initialize scheduler
@@ -232,6 +232,7 @@ current_song_duration = 0
 is_playing = False
 volume = DEFAULT_VOLUME
 current_position = 0
+seek_offset = 0  # Track the offset when seeking
 
 @contextmanager
 def session_scope():
@@ -250,14 +251,15 @@ def session_scope():
 def broadcast_playback_state():
     """Broadcast current playback state to all clients"""
     try:
-        global current_position, current_song_id, current_song_duration, is_playing
+        global current_position, current_song_id, current_song_duration, is_playing, seek_offset
         
         music_busy = pygame.mixer.music.get_busy()
         
         if music_busy and current_song_id:
             pos = pygame.mixer.music.get_pos()
             if pos >= 0:
-                current_position = pos / 1000
+                # Add seek_offset to get actual position in the song
+                current_position = (pos / 1000) + seek_offset
         elif not music_busy and is_playing and current_song_id:
             # Song has finished playing
             logger.info(f"Song finished playing: {current_song_id}")
@@ -275,10 +277,11 @@ def broadcast_playback_state():
         current_title = None
         if current_song_id:
             try:
-                with session_scope() as session:
-                    song = session.get(Song, current_song_id)
-                    if song:
-                        current_title = song.title
+                with app.app_context():
+                    with session_scope() as session:
+                        song = session.get(Song, current_song_id)
+                        if song:
+                            current_title = song.title
             except Exception as e:
                 logger.error(f"Error getting song title: {e}")
         
@@ -695,6 +698,10 @@ def play_music(song_id):
             current_song_duration = song.duration
             is_playing = True
             current_position = 0
+            
+            # Reset seek_offset when playing new song
+            global seek_offset
+            seek_offset = 0
             
             # Update last_played_at and move song to end of playlist
             song.last_played_at = datetime.utcnow()
@@ -1602,13 +1609,15 @@ def handle_stop():
 @csrf.exempt
 def seek():
     """Seek to a specific position in the current song."""
-    global current_position
+    global current_position, is_playing
     try:
         if request.is_json:
             data = request.get_json()
             position = data.get('position', 0)
         else:
             position = float(request.form.get('position', 0))
+        
+        logger.info(f"Seek requested to position: {position}")
         
         if not current_song_id:
             return jsonify({'success': False, 'message': 'No song is currently loaded'}), 400
@@ -1624,24 +1633,50 @@ def seek():
             # Reload and play from position
             actual_filename = find_actual_file(current_song.filename)
             file_path = os.path.join(BASE_DIR, actual_filename)
+            
+            logger.info(f"Seeking in file: {file_path}")
         
             if not os.path.exists(file_path):
                 return jsonify({'success': False, 'message': 'Song file not found'}), 404
 
             # Stop current playback
-            if pygame.mixer.music.get_busy():
-                pygame.mixer.music.stop()
-
+            pygame.mixer.music.stop()
+            pygame.mixer.music.unload()
+            
+            # Reload the file
             pygame.mixer.music.load(file_path)
-            pygame.mixer.music.play(start=position)
-            current_position = position
+            
+            # For MP3 files, use play with start parameter
+            # Convert to float for pygame
+            seek_position = float(position)
+            logger.info(f"Starting playback at position: {seek_position}")
+            
+            # Set seek_offset before playing
+            global seek_offset
+            seek_offset = seek_position
+            
+            # Play from the beginning first
+            pygame.mixer.music.play()
+            
+            # Then seek to position (works better with MP3)
+            try:
+                pygame.mixer.music.rewind()
+                pygame.mixer.music.set_pos(seek_position)
+                logger.info(f"set_pos successful to {seek_position}, seek_offset set to {seek_offset}")
+            except Exception as seek_error:
+                logger.warning(f"set_pos failed: {seek_error}, trying play with start")
+                pygame.mixer.music.stop()
+                pygame.mixer.music.play(start=seek_position)
+            
+            current_position = seek_position
+            is_playing = True
         
         broadcast_playback_state()
         
-        return jsonify({'success': True})
+        return jsonify({'success': True, 'position': current_position})
     except Exception as e:
         logger.error(f"Error seeking to position {position}: {e}")
-        return jsonify({'success': False, 'message': 'Error during seek'}), 500
+        return jsonify({'success': False, 'message': f'Error during seek: {str(e)}'}), 500
 
 @app.route('/delete-song/<int:id>', methods=['GET', 'DELETE'])
 @login_required
