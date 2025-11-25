@@ -271,12 +271,24 @@ def broadcast_playback_state():
                 'message': 'Song playback completed'
             })
 
+        # Get current song title
+        current_title = None
+        if current_song_id:
+            try:
+                with session_scope() as session:
+                    song = session.get(Song, current_song_id)
+                    if song:
+                        current_title = song.title
+            except Exception as e:
+                logger.error(f"Error getting song title: {e}")
+        
         socketio.emit('playback_update', {
             'position': current_position,
             'duration': current_song_duration,
             'is_playing': music_busy,
-            'volume': volume,
-            'current_song_id': current_song_id
+            'volume': int(volume * 100),
+            'current_song_id': current_song_id,
+            'current_song_title': current_title
         })
     except Exception as e:
         logger.error(f"Error in broadcast_playback_state: {e}")
@@ -469,6 +481,51 @@ def get_next_scheduled_song():
     except Exception as e:
         logger.error(f"Error getting next scheduled song: {e}")
     return None
+
+def broadcast_next_schedule():
+    """Broadcast next schedule info to all clients"""
+    try:
+        now = datetime.now()
+        current_time = now.strftime("%H:%M")
+        weekday = now.strftime("%A").lower()
+        
+        with session_scope() as session:
+            # Get schedules after current time
+            schedules = session.query(Schedule).filter(
+                Schedule.time > current_time,
+                Schedule.enabled == True
+            ).order_by(Schedule.time).all()
+            
+            # If no schedules after current time, get all enabled schedules (for next day)
+            if not schedules:
+                schedules = session.query(Schedule).filter(
+                    Schedule.enabled == True
+                ).order_by(Schedule.time).all()
+            
+            # Filter by current weekday
+            valid_schedules = [s for s in schedules if getattr(s, weekday)]
+            
+            next_schedule_info = None
+            if valid_schedules:
+                next_schedule = valid_schedules[0]
+                next_song = session.query(Song).order_by(
+                    Song.position.asc(),
+                    Song.last_played_at.is_(None).desc(),
+                    Song.priority.desc(),
+                    Song.last_played_at.asc()
+                ).first()
+                
+                next_schedule_info = {
+                    'time': next_schedule.time,
+                    'song_title': next_song.title if next_song else 'Không có bài hát'
+                }
+            
+            socketio.emit('next_schedule_update', {
+                'next_schedule': next_schedule_info
+            })
+            logger.info(f"Broadcast next schedule: {next_schedule_info}")
+    except Exception as e:
+        logger.error(f"Error broadcasting next schedule: {e}")
 
 def schedule_music():
     """Schedule music playback with improved error handling and thread safety."""
@@ -931,6 +988,178 @@ def download_music(url):
     else:
         return download_single_track(url)
 
+# =============================================================================
+# API Endpoints for React Frontend
+# =============================================================================
+
+@app.route('/api/initial-state')
+def api_initial_state():
+    """API endpoint to get all initial state for React frontend"""
+    try:
+        # Check authentication
+        is_authenticated = 'user_id' in session
+        username = session.get('username', '')
+        
+        if not is_authenticated:
+            return jsonify({
+                'is_authenticated': False,
+                'username': '',
+                'songs': [],
+                'schedules': [],
+                'is_playing': False,
+                'current_song_id': None,
+                'current_song_title': None,
+                'volume': 100,
+                'download_state': get_download_state(),
+                'next_schedule': None,
+                'disk_usage': {
+                    'used': 0,
+                    'total': 0,
+                    'percent': 0,
+                    'used_formatted': '0 GB',
+                    'total_formatted': '0 GB'
+                },
+                'ytdlp_version': ''
+            })
+        
+        disk_usage_info = get_disk_usage()
+        
+        with session_scope() as db_session:
+            # Get songs
+            songs = db_session.query(Song).order_by(
+                Song.position.asc(),
+                Song.last_played_at.is_(None).desc(),
+                Song.priority.desc(),
+                Song.last_played_at.asc()
+            ).all()
+            
+            songs_data = [{
+                'id': s.id,
+                'title': s.title,
+                'duration': s.duration,
+                'source': s.source,
+                'file_path': s.filename,
+                'position': s.position,
+                'last_played_at': s.last_played_at.isoformat() if s.last_played_at else None,
+                'priority': s.priority,
+                'created_at': s.created_at.isoformat() if s.created_at else None
+            } for s in songs]
+            
+            # Get schedules
+            schedules = db_session.query(Schedule).order_by(Schedule.time).all()
+            schedules_data = [{
+                'id': s.id,
+                'time': s.time,
+                'is_active': s.enabled,
+                'monday': s.monday,
+                'tuesday': s.tuesday,
+                'wednesday': s.wednesday,
+                'thursday': s.thursday,
+                'friday': s.friday,
+                'saturday': s.saturday,
+                'sunday': s.sunday
+            } for s in schedules]
+            
+            # Get next schedule info
+            now = datetime.now()
+            current_time = now.strftime("%H:%M")
+            weekday = now.strftime("%A").lower()
+            
+            next_schedules = db_session.query(Schedule).filter(
+                Schedule.time > current_time,
+                Schedule.enabled == True
+            ).order_by(Schedule.time).all()
+            
+            if not next_schedules:
+                next_schedules = db_session.query(Schedule).filter(
+                    Schedule.enabled == True
+                ).order_by(Schedule.time).all()
+            
+            next_schedule_info = None
+            valid_schedules = [s for s in next_schedules if getattr(s, weekday)]
+            
+            if valid_schedules:
+                next_schedule = valid_schedules[0]
+                next_song_to_play = db_session.query(Song).order_by(
+                    Song.position.asc(),
+                    Song.last_played_at.is_(None).desc(),
+                    Song.priority.desc(),
+                    Song.last_played_at.asc()
+                ).first()
+                
+                next_schedule_info = {
+                    'time': next_schedule.time,
+                    'song_title': next_song_to_play.title if next_song_to_play else 'Không có bài hát'
+                }
+            
+            # Get current song title
+            current_song_title = None
+            if current_song_id:
+                current_song = db_session.get(Song, current_song_id)
+                if current_song:
+                    current_song_title = current_song.title
+            
+            return jsonify({
+                'is_authenticated': True,
+                'username': username,
+                'songs': songs_data,
+                'schedules': schedules_data,
+                'is_playing': is_playing,
+                'current_song_id': current_song_id,
+                'current_song_title': current_song_title,
+                'volume': int(volume * 100),
+                'download_state': get_download_state(),
+                'next_schedule': next_schedule_info,
+                'disk_usage': {
+                    'used': disk_usage_info.get('used_gb', 0) * 1024 * 1024 * 1024,
+                    'total': disk_usage_info.get('total_gb', 0) * 1024 * 1024 * 1024,
+                    'percent': disk_usage_info.get('percentage_used', 0),
+                    'used_formatted': f"{disk_usage_info.get('used_gb', 0):.2f} GB",
+                    'total_formatted': f"{disk_usage_info.get('total_gb', 0):.2f} GB"
+                },
+                'ytdlp_version': get_ytdlp_version()
+            })
+            
+    except Exception as e:
+        logger.error(f"Error getting initial state: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/login', methods=['POST'])
+@csrf.exempt
+def api_login():
+    """API login endpoint for React frontend"""
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+        
+        if not username or not password:
+            return jsonify({'error': 'Vui lòng nhập tên đăng nhập và mật khẩu'}), 400
+        
+        with session_scope() as db_session:
+            user = db_session.query(User).filter_by(username=username).first()
+            
+            if user and user.check_password(password):
+                session['user_id'] = user.id
+                session['username'] = user.username
+                return jsonify({'success': True, 'username': user.username})
+            else:
+                return jsonify({'error': 'Sai tên đăng nhập hoặc mật khẩu'}), 401
+                
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        return jsonify({'error': 'Lỗi đăng nhập'}), 500
+
+@app.route('/api/logout')
+def api_logout():
+    """API logout endpoint"""
+    session.clear()
+    return jsonify({'success': True})
+
+# =============================================================================
+# Original Routes
+# =============================================================================
+
 @app.route('/')
 @login_required
 def index():
@@ -1031,14 +1260,22 @@ def set_volume(value):
 
 @app.route('/add-schedule', methods=['POST'])
 @login_required
+@csrf.exempt
 def add_schedule():
-    time = request.form.get('time')
+    # Support both form data and JSON
+    if request.is_json:
+        data = request.get_json()
+        time = data.get('time')
+        weekdays_selected = [day for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] if data.get(day)]
+    else:
+        time = request.form.get('time')
+        weekdays_selected = request.form.getlist('weekdays')
+    
     if not time:
         return jsonify({'success': False, 'message': 'Time is required'}), 400
 
     try:
         datetime.strptime(time, '%H:%M')
-        weekdays_selected = request.form.getlist('weekdays')
 
         with session_scope() as session:
             schedule = Schedule(time=time)
@@ -1053,25 +1290,24 @@ def add_schedule():
             session.add(schedule)
             session.flush()
 
-            days_map = {
-                'monday': 'Mon', 'tuesday': 'Tue', 'wednesday': 'Wed',
-                'thursday': 'Thu', 'friday': 'Fri', 'saturday': 'Sat', 'sunday': 'Sun'
-            }
-            enabled_days = [days_map[day] for day in weekdays_selected if day in days_map]
-            weekdays_display_str = ' • '.join(enabled_days)
-
             schedule_data = {
-                'success': True,
-                'schedule': {
-                    'id': schedule.id,
-                    'time': schedule.time,
-                    'weekdays_display': weekdays_display_str,
-                    'enabled': schedule.enabled
-                }
+                'id': schedule.id,
+                'time': schedule.time,
+                'is_active': schedule.enabled,
+                'monday': schedule.monday,
+                'tuesday': schedule.tuesday,
+                'wednesday': schedule.wednesday,
+                'thursday': schedule.thursday,
+                'friday': schedule.friday,
+                'saturday': schedule.saturday,
+                'sunday': schedule.sunday
             }
 
         # Reload schedules after the database transaction is committed
         schedule_music()
+        
+        # Broadcast updated next schedule to all clients
+        broadcast_next_schedule()
         
         return jsonify(schedule_data)
 
@@ -1081,27 +1317,33 @@ def add_schedule():
         logger.error(f"Error adding schedule: {e}")
         return jsonify({'success': False, 'message': 'An internal error occurred.'}), 500
 
-@app.route('/toggle-schedule/<int:id>')
+@app.route('/toggle-schedule/<int:id>', methods=['GET', 'POST'])
 @login_required
+@csrf.exempt
 def toggle_schedule(id):
     try:
         with session_scope() as session:
             schedule = session.get(Schedule, id)
             if schedule:
                 schedule.enabled = not schedule.enabled
-                result = {'success': True}
+                result = {'success': True, 'is_active': schedule.enabled}
             else:
                 return jsonify({'success': False, 'message': 'Schedule not found'}), 404
         
         # Reload schedules after the database transaction is committed
         schedule_music()
+        
+        # Broadcast updated next schedule to all clients
+        broadcast_next_schedule()
+        
         return jsonify(result)
     except Exception as e:
         logger.error(f"Error toggling schedule {id}: {e}")
         return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
 
-@app.route('/delete-schedule/<int:id>')
+@app.route('/delete-schedule/<int:id>', methods=['GET', 'DELETE'])
 @login_required
+@csrf.exempt
 def delete_schedule(id):
     try:
         with session_scope() as session:
@@ -1114,6 +1356,10 @@ def delete_schedule(id):
         
         # Reload schedules after the database transaction is committed
         schedule_music()
+        
+        # Broadcast updated next schedule to all clients
+        broadcast_next_schedule()
+        
         return jsonify(result)
     except Exception as e:
         logger.error(f"Error deleting schedule {id}: {e}")
@@ -1121,8 +1367,15 @@ def delete_schedule(id):
 
 @app.route('/add-music', methods=['POST'])
 @login_required
+@csrf.exempt
 def add_music():
-    url = request.form.get('url')
+    # Support both form data and JSON
+    if request.is_json:
+        data = request.get_json()
+        url = data.get('url')
+    else:
+        url = request.form.get('url')
+    
     if not url:
         return jsonify({'success': False, 'message': 'No URL provided'}), 400
 
@@ -1266,19 +1519,29 @@ def upload_music():
 
 @app.route('/update-ytdlp', methods=['POST'])
 @login_required
+@csrf.exempt
 def update_ytdlp_manual():
-    """Manual update yt-dlp"""
+    """Manual update yt-dlp and reload the module"""
     try:
         logger.info("Manual yt-dlp update requested")
         update_ytdlp()
-        return jsonify({'success': True, 'message': 'yt-dlp updated successfully'})
+        
+        # Reload yt_dlp module to use new version without restarting server
+        import importlib
+        import yt_dlp
+        importlib.reload(yt_dlp)
+        logger.info("yt-dlp module reloaded successfully")
+        
+        new_version = get_ytdlp_version()
+        return jsonify({'success': True, 'message': 'yt-dlp updated successfully', 'version': new_version})
     except Exception as e:
         logger.error(f"Error manually updating yt-dlp: {e}")
         return jsonify({'success': False, 'message': 'Failed to update yt-dlp'}), 500
 
 
-@app.route('/play/<int:id>')
+@app.route('/play/<int:id>', methods=['GET', 'POST'])
 @login_required
+@csrf.exempt
 def play(id):
     success = play_music(id)
     return jsonify({'success': success})
@@ -1334,32 +1597,45 @@ def handle_stop():
             pass
         emit('stop_error', {'error': str(e)})
 
-@app.route('/seek/<float:position>')
+@app.route('/seek', methods=['POST'])
 @login_required
-def seek(position):
+@csrf.exempt
+def seek():
     """Seek to a specific position in the current song."""
     global current_position
     try:
-        if not current_song:
+        if request.is_json:
+            data = request.get_json()
+            position = data.get('position', 0)
+        else:
+            position = float(request.form.get('position', 0))
+        
+        if not current_song_id:
             return jsonify({'success': False, 'message': 'No song is currently loaded'}), 400
 
-        if not (0 <= position <= current_song.duration):
-            return jsonify({'success': False, 'message': 'Invalid position'}), 400
+        with session_scope() as session:
+            current_song = session.get(Song, current_song_id)
+            if not current_song:
+                return jsonify({'success': False, 'message': 'Song not found in database'}), 404
 
-        # Stop current playback
-        if pygame.mixer.music.get_busy():
-            pygame.mixer.music.stop()
+            if not (0 <= position <= current_song.duration):
+                return jsonify({'success': False, 'message': 'Invalid position'}), 400
 
-        # Reload and play from position
-        actual_filename = find_actual_file(current_song.filename)
-        file_path = os.path.join(BASE_DIR, actual_filename)
+            # Reload and play from position
+            actual_filename = find_actual_file(current_song.filename)
+            file_path = os.path.join(BASE_DIR, actual_filename)
         
-        if not os.path.exists(file_path):
-            return jsonify({'success': False, 'message': 'Song file not found'}), 404
+            if not os.path.exists(file_path):
+                return jsonify({'success': False, 'message': 'Song file not found'}), 404
 
-        pygame.mixer.music.load(file_path)
-        pygame.mixer.music.play(start=position)
-        current_position = position
+            # Stop current playback
+            if pygame.mixer.music.get_busy():
+                pygame.mixer.music.stop()
+
+            pygame.mixer.music.load(file_path)
+            pygame.mixer.music.play(start=position)
+            current_position = position
+        
         broadcast_playback_state()
         
         return jsonify({'success': True})
@@ -1367,8 +1643,9 @@ def seek(position):
         logger.error(f"Error seeking to position {position}: {e}")
         return jsonify({'success': False, 'message': 'Error during seek'}), 500
 
-@app.route('/delete-song/<int:id>')
+@app.route('/delete-song/<int:id>', methods=['GET', 'DELETE'])
 @login_required
+@csrf.exempt
 def delete_song(id):
     global current_song_id, current_song_duration, is_playing, current_position
     try:
@@ -1414,13 +1691,15 @@ def stream(id):
 def handle_volume(data):
     global volume
     try:
-        percent_value = int(float(data['value']))
+        # Support both 'value' and 'volume' keys
+        vol = data.get('volume', data.get('value'))
+        percent_value = int(float(vol))
         percent_value = max(0, min(100, percent_value))
         volume = percent_value / 100.0
         pygame.mixer.music.set_volume(volume)
-        emit('volume_updated', {'volume': volume})
+        emit('volume_updated', {'volume': percent_value}, broadcast=True)
     except (ValueError, TypeError) as e:
-        logger.error(f"Invalid volume value: {data.get('value')}")
+        logger.error(f"Invalid volume value: {data}")
         emit('error', {'message': 'Invalid volume value. Must be between 0 and 100.'})
     except Exception as e:
         logger.error(f"Error setting volume: {e}")
@@ -1428,13 +1707,30 @@ def handle_volume(data):
 
 @app.route('/update-song-order', methods=['POST'])
 @login_required
+@csrf.exempt
 def update_song_order():
     try:
         data = request.json
-        if not data or 'songs' not in data:
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        
+        # Support both 'songs' array and 'song_ids' array formats
+        song_order = data.get('songs')
+        song_ids = data.get('song_ids')
+        
+        if song_ids:
+            # React frontend sends song_ids as array of IDs in new order
+            with session_scope() as session:
+                for position, song_id in enumerate(song_ids):
+                    song = session.get(Song, song_id)
+                    if song:
+                        song.position = position
+            return jsonify({'success': True})
+        
+        if not song_order:
             return jsonify({'success': False, 'message': 'No song order data provided'}), 400
             
-        song_order = data['songs']  # List of {id: song_id, position: new_position}
+        # Original format: List of {id: song_id, position: new_position}
         
         with session_scope() as session:
             for item in song_order:
@@ -1478,6 +1774,7 @@ def reset_song_positions():
 
 @app.route('/reset-playlist-order', methods=['POST'])
 @login_required
+@csrf.exempt
 def reset_playlist_order():
     """Reset playlist order based on play history and priority"""
     try:
@@ -1552,8 +1849,14 @@ def handle_sort_unplayed_first():
 def disk_usage_api():
     """API endpoint to get disk usage information"""
     try:
-        disk_usage = get_disk_usage()
-        return jsonify({'success': True, 'data': disk_usage})
+        disk_info = get_disk_usage()
+        return jsonify({
+            'used': disk_info.get('used_gb', 0) * 1024 * 1024 * 1024,
+            'total': disk_info.get('total_gb', 0) * 1024 * 1024 * 1024,
+            'percent': disk_info.get('percentage_used', 0),
+            'used_formatted': f"{disk_info.get('used_gb', 0):.2f} GB",
+            'total_formatted': f"{disk_info.get('total_gb', 0):.2f} GB"
+        })
     except Exception as e:
         logger.error(f"Error getting disk usage: {e}")
         return jsonify({'success': False, 'message': 'Error retrieving disk space information'}), 500
@@ -1570,6 +1873,7 @@ def get_download_state_api():
 
 @app.route('/cancel-download', methods=['POST'])
 @login_required
+@csrf.exempt
 def cancel_download_api():
     """API endpoint to cancel current download"""
     try:
@@ -1616,6 +1920,30 @@ def logout():
     """Logout route"""
     session.clear()
     return redirect(url_for('login'))
+
+# =============================================================================
+# Serve React Frontend (Production)
+# =============================================================================
+
+REACT_BUILD_DIR = os.path.join(BASE_DIR, 'static', 'react')
+
+@app.route('/app')
+@app.route('/app/')
+@app.route('/app/<path:path>')
+def serve_react(path=''):
+    """Serve React frontend for production"""
+    if path and os.path.exists(os.path.join(REACT_BUILD_DIR, path)):
+        return send_file(os.path.join(REACT_BUILD_DIR, path))
+    return send_file(os.path.join(REACT_BUILD_DIR, 'index.html'))
+
+@app.route('/assets/<path:filename>')
+def serve_react_assets(filename):
+    """Serve React static assets"""
+    return send_file(os.path.join(REACT_BUILD_DIR, 'assets', filename))
+
+# =============================================================================
+# Scheduler and Initialization
+# =============================================================================
 
 def list_scheduler_jobs():
     """List all current jobs in the scheduler"""

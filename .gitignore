@@ -2,3 +2,6 @@ venv/
 music/
 instance/music.db
 config/playlist.json
+.github
+music-scheduler-venv.service
+static
