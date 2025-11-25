@@ -124,6 +124,15 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       console.log('Schedule triggered:', data);
     });
 
+    // Schedule updated (e.g., one-time schedule disabled)
+    socketInstance.on('schedule_updated', (data: { id: number; is_active: boolean }) => {
+      setSchedules((prev) =>
+        prev.map((s) =>
+          s.id === data.id ? { ...s, is_active: data.is_active } : s
+        )
+      );
+    });
+
     // Sort completed
     socketInstance.on('sort_completed', (data: { songs: Song[] }) => {
       setSongs(data.songs);

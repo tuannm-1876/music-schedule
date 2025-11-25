@@ -7,7 +7,8 @@ import {
   Trash2, 
   ChevronDown,
   ChevronUp,
-  Loader2
+  Loader2,
+  Zap
 } from 'lucide-react';
 import { useSocket } from '@/contexts/SocketContext';
 import { useToast } from '@/contexts/ToastContext';
@@ -27,6 +28,7 @@ export function ScheduleManager() {
 
   // Form state
   const [time, setTime] = useState('08:00');
+  const [oneTime, setOneTime] = useState(false);
   const [selectedDays, setSelectedDays] = useState<Record<string, boolean>>({
     monday: true,
     tuesday: true,
@@ -50,6 +52,7 @@ export function ScheduleManager() {
     try {
       const response = await scheduleApi.add({
         time,
+        one_time: oneTime,
         monday: selectedDays.monday,
         tuesday: selectedDays.tuesday,
         wednesday: selectedDays.wednesday,
@@ -65,6 +68,7 @@ export function ScheduleManager() {
       
       // Reset form
       setTime('08:00');
+      setOneTime(false);
       setSelectedDays({
         monday: true,
         tuesday: true,
@@ -172,6 +176,12 @@ export function ScheduleManager() {
                         <span className="font-mono font-semibold text-lg">
                           {schedule.time}
                         </span>
+                        {schedule.one_time && (
+                          <span className="px-2 py-0.5 text-xs rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                            <Zap className="w-3 h-3" />
+                            Một lần
+                          </span>
+                        )}
                       </div>
                     </div>
 
@@ -244,6 +254,18 @@ export function ScheduleManager() {
                         required
                       />
                     </div>
+
+                    {/* One-time option */}
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={oneTime}
+                        onChange={(e) => setOneTime(e.target.checked)}
+                        className="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary"
+                      />
+                      <Zap className="w-4 h-4 text-amber-500" />
+                      <span className="text-sm">Chỉ phát một lần (tự tắt sau khi phát)</span>
+                    </label>
 
                     {/* Weekday Selector */}
                     <div className="flex flex-wrap gap-1">

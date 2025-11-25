@@ -58,6 +58,7 @@ export const musicApi = {
 export const scheduleApi = {
   add: (data: {
     time: string;
+    one_time?: boolean;
     monday: boolean;
     tuesday: boolean;
     wednesday: boolean;

@@ -16,6 +16,7 @@ export interface Schedule {
   id: number;
   time: string;
   is_active: boolean;
+  one_time: boolean;
   monday: boolean;
   tuesday: boolean;
   wednesday: boolean;

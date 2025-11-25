@@ -305,6 +305,7 @@ class Schedule(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     time = db.Column(db.String(5), nullable=False)  # Format: "HH:MM"
     enabled = db.Column(db.Boolean, default=True)
+    one_time = db.Column(db.Boolean, default=False)  # If True, disable after playing once
     monday = db.Column(db.Boolean, default=True)
     tuesday = db.Column(db.Boolean, default=True)
     wednesday = db.Column(db.Boolean, default=True)
@@ -592,6 +593,9 @@ def schedule_music():
                             now = datetime.now()
                             schedule_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
                             
+                            # Pass schedule_id and one_time flag to the job
+                            job_args = [schedule.id, schedule.one_time]
+                            
                             if schedule_time > now:
                                 scheduler.add_job(
                                     play_next_song,
@@ -600,10 +604,11 @@ def schedule_music():
                                     minute=minute,
                                     day_of_week=','.join(days_of_week),
                                     id=job_id,
+                                    args=job_args,
                                     replace_existing=True,
                                     next_run_time=schedule_time
                                 )
-                                logger.info(f"Added job {job_id} with next run today at {schedule_time}")
+                                logger.info(f"Added job {job_id} with next run today at {schedule_time}, one_time={schedule.one_time}")
                             else:
                                 scheduler.add_job(
                                     play_next_song,
@@ -612,9 +617,10 @@ def schedule_music():
                                     minute=minute,
                                     day_of_week=','.join(days_of_week),
                                     id=job_id,
+                                    args=job_args,
                                     replace_existing=True
                                 )
-                                logger.info(f"Added job {job_id} for days: {','.join(days_of_week)} at {hour:02d}:{minute:02d}")
+                                logger.info(f"Added job {job_id} for days: {','.join(days_of_week)} at {hour:02d}:{minute:02d}, one_time={schedule.one_time}")
                         else:
                             logger.warning(f"Schedule {schedule.id} has no enabled days, skipping")
                     except ValueError as e:
@@ -645,9 +651,9 @@ def schedule_music():
                 logger.error(f"Failed to restore broadcast job: {e}")
             return False
 
-def play_next_song():
+def play_next_song(schedule_id=None, one_time=False):
     with app.app_context():
-        logger.info("Scheduler triggered play next song")
+        logger.info(f"Scheduler triggered play next song (schedule_id={schedule_id}, one_time={one_time})")
         try:
             with session_scope() as session:
                 # Find the next song to play - prioritize songs that haven't been played
@@ -667,8 +673,26 @@ def play_next_song():
                         'time': datetime.now().strftime("%H:%M")
                     })
                     play_music(next_song.id)
+                    
+                    # If this is a one-time schedule, disable it after playing
+                    if one_time and schedule_id:
+                        schedule = session.get(Schedule, schedule_id)
+                        if schedule:
+                            schedule.enabled = False
+                            logger.info(f"Disabled one-time schedule {schedule_id}")
+                            # Emit schedule update to clients
+                            socketio.emit('schedule_updated', {
+                                'id': schedule_id,
+                                'is_active': False
+                            })
                 else:
                     logger.warning("No songs found in the playlist")
+                    
+            # Broadcast next schedule update after potential disable
+            if one_time and schedule_id:
+                broadcast_next_schedule()
+                schedule_music()  # Reload schedules to remove the disabled job
+                
         except Exception as e:
             logger.error(f"Error playing next song: {e}")
 
@@ -1058,6 +1082,7 @@ def api_initial_state():
                 'id': s.id,
                 'time': s.time,
                 'is_active': s.enabled,
+                'one_time': s.one_time,
                 'monday': s.monday,
                 'tuesday': s.tuesday,
                 'wednesday': s.wednesday,
@@ -1273,9 +1298,11 @@ def add_schedule():
     if request.is_json:
         data = request.get_json()
         time = data.get('time')
+        one_time = data.get('one_time', False)
         weekdays_selected = [day for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] if data.get(day)]
     else:
         time = request.form.get('time')
+        one_time = request.form.get('one_time') == 'true'
         weekdays_selected = request.form.getlist('weekdays')
     
     if not time:
@@ -1286,6 +1313,7 @@ def add_schedule():
 
         with session_scope() as session:
             schedule = Schedule(time=time)
+            schedule.one_time = one_time
             schedule.monday = 'monday' in weekdays_selected
             schedule.tuesday = 'tuesday' in weekdays_selected
             schedule.wednesday = 'wednesday' in weekdays_selected
@@ -1301,6 +1329,7 @@ def add_schedule():
                 'id': schedule.id,
                 'time': schedule.time,
                 'is_active': schedule.enabled,
+                'one_time': schedule.one_time,
                 'monday': schedule.monday,
                 'tuesday': schedule.tuesday,
                 'wednesday': schedule.wednesday,
