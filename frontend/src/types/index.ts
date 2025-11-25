@@ -58,6 +58,13 @@ export interface DiskUsage {
   total_formatted: string;
 }
 
+// Playback settings
+export interface PlaybackSettings {
+  shuffle_mode: boolean;
+  fade_enabled: boolean;
+  fade_duration: number;
+}
+
 // Initial state from API
 export interface InitialState {
   songs: Song[];
@@ -75,6 +82,7 @@ export interface InitialState {
   ytdlp_version: string;
   is_authenticated: boolean;
   username: string;
+  settings?: PlaybackSettings;
 }
 
 // Toast notification type

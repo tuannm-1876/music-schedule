@@ -1,19 +1,32 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { Play, Pause, Square, Volume2, VolumeX, Music } from 'lucide-react';
+import { Play, Pause, Square, Volume2, VolumeX, Music, Shuffle, Settings, X } from 'lucide-react';
 import { useSocket } from '@/contexts/SocketContext';
 import { Button, Slider } from '@/components/ui';
 import { formatDuration } from '@/lib/utils';
 import { musicApi } from '@/lib/api';
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
 export function Player() {
-  const { playbackState, togglePlayPause, stopMusic, setVolume } = useSocket();
+  const { playbackState, togglePlayPause, stopMusic, setVolume, settings, toggleShuffle, toggleFade, setFadeDuration } = useSocket();
   const [localVolume, setLocalVolume] = useState(playbackState.volume);
   const [isMuted, setIsMuted] = useState(false);
   const [previousVolume, setPreviousVolume] = useState(100);
+  const [showSettings, setShowSettings] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
 
   const { is_playing, current_song_title, position, duration } = playbackState;
   const progress = duration > 0 ? (position / duration) * 100 : 0;
+
+  // Close settings when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (settingsRef.current && !settingsRef.current.contains(event.target as Node)) {
+        setShowSettings(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const handleSeek = async (e: React.MouseEvent<HTMLDivElement>) => {
     if (!duration) return;
@@ -173,6 +186,131 @@ export function Player() {
                 onValueChange={handleVolumeChange}
                 className="flex-1"
               />
+            </div>
+
+            {/* Shuffle & Settings */}
+            <div className="flex items-center gap-1 relative" ref={settingsRef}>
+              {/* Shuffle Toggle */}
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={toggleShuffle}
+                className={`h-8 w-8 shrink-0 transition-colors ${
+                  settings.shuffle_mode 
+                    ? 'text-primary bg-primary/10 hover:bg-primary/20' 
+                    : 'hover:bg-muted'
+                }`}
+                title={settings.shuffle_mode ? 'Tắt phát ngẫu nhiên' : 'Bật phát ngẫu nhiên'}
+              >
+                <Shuffle className="w-4 h-4" />
+              </Button>
+
+              {/* Settings Button */}
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowSettings(!showSettings)}
+                className={`h-8 w-8 shrink-0 transition-colors ${
+                  showSettings ? 'bg-muted' : 'hover:bg-muted'
+                }`}
+                title="Cài đặt phát nhạc"
+              >
+                <Settings className="w-4 h-4" />
+              </Button>
+
+              {/* Settings Dropdown */}
+              <AnimatePresence>
+                {showSettings && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                    transition={{ duration: 0.15 }}
+                    className="absolute bottom-full right-0 mb-2 w-72 p-4 glass rounded-lg border border-border shadow-xl overflow-hidden"
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-sm font-medium">Cài đặt phát nhạc</h4>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setShowSettings(false)}
+                        className="h-6 w-6"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+
+                    {/* Shuffle Mode */}
+                    <div className="flex items-center justify-between py-2 border-b border-border">
+                      <div>
+                        <p className="text-sm font-medium">Phát ngẫu nhiên</p>
+                        <p className="text-xs text-muted-foreground">Xáo trộn thứ tự phát</p>
+                      </div>
+                      <button
+                        onClick={toggleShuffle}
+                        className={`relative w-10 h-5 rounded-full transition-colors ${
+                          settings.shuffle_mode ? 'bg-primary' : 'bg-muted'
+                        }`}
+                      >
+                        <span
+                          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                            settings.shuffle_mode ? 'translate-x-5' : 'translate-x-0.5'
+                          }`}
+                        />
+                      </button>
+                    </div>
+
+                    {/* Fade In/Out */}
+                    <div className="flex items-center justify-between py-2 border-b border-border">
+                      <div>
+                        <p className="text-sm font-medium">Fade In/Out</p>
+                        <p className="text-xs text-muted-foreground">Chuyển bài mượt mà</p>
+                      </div>
+                      <button
+                        onClick={toggleFade}
+                        className={`relative w-10 h-5 rounded-full transition-colors ${
+                          settings.fade_enabled ? 'bg-primary' : 'bg-muted'
+                        }`}
+                      >
+                        <span
+                          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                            settings.fade_enabled ? 'translate-x-5' : 'translate-x-0.5'
+                          }`}
+                        />
+                      </button>
+                    </div>
+
+                    {/* Fade Duration */}
+                    <AnimatePresence>
+                      {settings.fade_enabled && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="pt-3">
+                            <div className="flex items-center justify-between mb-2">
+                              <p className="text-sm">Thời gian fade</p>
+                              <span className="text-xs font-medium bg-primary/20 text-primary px-2 py-0.5 rounded">{settings.fade_duration}s</span>
+                            </div>
+                            <div className="px-1">
+                              <Slider
+                                value={settings.fade_duration}
+                                min={0.5}
+                                max={5}
+                                step={0.5}
+                                onValueChange={(v) => setFadeDuration(v)}
+                                className="w-full"
+                              />
+                            </div>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </div>
         </div>

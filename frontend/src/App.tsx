@@ -13,7 +13,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState('');
-  const { setSongs, setSchedules, setPlaybackState, setNextSchedule } = useSocket();
+  const { setSongs, setSchedules, setPlaybackState, setNextSchedule, setSettings } = useSocket();
   const { addToast } = useToast();
 
   useEffect(() => {
@@ -37,6 +37,9 @@ function App() {
             duration: 0,
             volume: data.volume,
           });
+          if (data.settings) {
+            setSettings(data.settings);
+          }
         }
       } catch (error) {
         console.error('Failed to load initial state:', error);
@@ -47,7 +50,7 @@ function App() {
     };
 
     loadInitialState();
-  }, [setSongs, setSchedules, setPlaybackState]);
+  }, [setSongs, setSchedules, setPlaybackState, setSettings]);
 
   const handleLogin = async (loginUsername: string, password: string) => {
     try {
@@ -69,6 +72,9 @@ function App() {
         duration: 0,
         volume: data.volume,
       });
+      if (data.settings) {
+        setSettings(data.settings);
+      }
       
       addToast('success', 'Đăng nhập thành công!');
     } catch (error: any) {

@@ -233,6 +233,9 @@ is_playing = False
 volume = DEFAULT_VOLUME
 current_position = 0
 seek_offset = 0  # Track the offset when seeking
+shuffle_mode = False  # Shuffle mode for random playback
+fade_enabled = True  # Enable fade in/out effect
+fade_duration = 2.0  # Fade duration in seconds
 
 @contextmanager
 def session_scope():
@@ -298,6 +301,43 @@ def broadcast_playback_state():
 
 def safe_broadcast():
     socketio.start_background_task(broadcast_playback_state)
+
+
+def fade_in():
+    """Gradually increase volume from 0 to target volume"""
+    global volume
+    try:
+        steps = int(fade_duration * 20)  # 20 steps per second
+        step_volume = volume / steps
+        current_vol = 0
+        for _ in range(steps):
+            current_vol = min(current_vol + step_volume, volume)
+            pygame.mixer.music.set_volume(current_vol)
+            eventlet.sleep(0.05)  # 50ms per step
+        pygame.mixer.music.set_volume(volume)
+        logger.info(f"Fade in complete, volume: {volume}")
+    except Exception as e:
+        logger.error(f"Error in fade_in: {e}")
+        pygame.mixer.music.set_volume(volume)
+
+
+def fade_out():
+    """Gradually decrease volume to 0 then stop"""
+    global volume
+    try:
+        current_vol = pygame.mixer.music.get_volume()
+        steps = int(fade_duration * 20)  # 20 steps per second
+        step_volume = current_vol / steps if steps > 0 else current_vol
+        for _ in range(steps):
+            current_vol = max(current_vol - step_volume, 0)
+            pygame.mixer.music.set_volume(current_vol)
+            eventlet.sleep(0.05)  # 50ms per step
+        pygame.mixer.music.stop()
+        pygame.mixer.music.set_volume(volume)  # Reset volume for next song
+        logger.info("Fade out complete")
+    except Exception as e:
+        logger.error(f"Error in fade_out: {e}")
+        pygame.mixer.music.stop()
 
 
 # Models
@@ -653,16 +693,22 @@ def schedule_music():
 
 def play_next_song(schedule_id=None, one_time=False):
     with app.app_context():
-        logger.info(f"Scheduler triggered play next song (schedule_id={schedule_id}, one_time={one_time})")
+        logger.info(f"Scheduler triggered play next song (schedule_id={schedule_id}, one_time={one_time}, shuffle={shuffle_mode})")
         try:
             with session_scope() as session:
-                # Find the next song to play - prioritize songs that haven't been played
-                next_song = session.query(Song).order_by(
-                    Song.position.asc(),
-                    Song.last_played_at.is_(None).desc(),
-                    Song.priority.desc(),
-                    Song.last_played_at.asc()
-                ).first()
+                if shuffle_mode:
+                    # Shuffle mode: pick a random song
+                    from sqlalchemy.sql.expression import func
+                    next_song = session.query(Song).order_by(func.random()).first()
+                    logger.info(f"Shuffle mode: randomly selected song")
+                else:
+                    # Normal mode: prioritize songs that haven't been played
+                    next_song = session.query(Song).order_by(
+                        Song.position.asc(),
+                        Song.last_played_at.is_(None).desc(),
+                        Song.priority.desc(),
+                        Song.last_played_at.asc()
+                    ).first()
 
                 if next_song:
                     logger.info(f"Playing song: {next_song.title}")
@@ -697,7 +743,7 @@ def play_next_song(schedule_id=None, one_time=False):
             logger.error(f"Error playing next song: {e}")
 
 def play_music(song_id):
-    global current_song_id, current_song_duration, is_playing, current_position
+    global current_song_id, current_song_duration, is_playing, current_position, seek_offset
     
     try:
         with session_scope() as session:
@@ -713,18 +759,28 @@ def play_music(song_id):
                 return False
 
             if pygame.mixer.music.get_busy():
-                pygame.mixer.music.stop()
+                # Fade out current song if fade is enabled
+                if fade_enabled:
+                    fade_out()
+                else:
+                    pygame.mixer.music.stop()
 
             pygame.mixer.music.load(file_path)
-            pygame.mixer.music.play()
+            
+            # Start with volume 0 if fade is enabled
+            if fade_enabled:
+                pygame.mixer.music.set_volume(0)
+                pygame.mixer.music.play()
+                # Fade in
+                fade_in()
+            else:
+                pygame.mixer.music.set_volume(volume)
+                pygame.mixer.music.play()
             
             current_song_id = song_id
             current_song_duration = song.duration
             is_playing = True
             current_position = 0
-            
-            # Reset seek_offset when playing new song
-            global seek_offset
             seek_offset = 0
             
             # Update last_played_at and move song to end of playlist
@@ -1149,7 +1205,12 @@ def api_initial_state():
                     'used_formatted': f"{disk_usage_info.get('used_gb', 0):.2f} GB",
                     'total_formatted': f"{disk_usage_info.get('total_gb', 0):.2f} GB"
                 },
-                'ytdlp_version': get_ytdlp_version()
+                'ytdlp_version': get_ytdlp_version(),
+                'settings': {
+                    'shuffle_mode': shuffle_mode,
+                    'fade_enabled': fade_enabled,
+                    'fade_duration': fade_duration
+                }
             })
             
     except Exception as e:
@@ -1618,7 +1679,11 @@ def handle_stop():
     global current_song_id, current_song_duration, is_playing, current_position
     try:
         if pygame.mixer.music.get_busy():
-            pygame.mixer.music.stop()
+            # Use fade out if enabled
+            if fade_enabled:
+                fade_out()
+            else:
+                pygame.mixer.music.stop()
             current_song_id = None
             current_song_duration = 0
             is_playing = False
@@ -1632,6 +1697,58 @@ def handle_stop():
         except Exception:
             pass
         emit('stop_error', {'error': str(e)})
+
+@socketio.on('toggle_shuffle')
+def handle_toggle_shuffle():
+    """Toggle shuffle mode on/off"""
+    global shuffle_mode
+    try:
+        shuffle_mode = not shuffle_mode
+        logger.info(f"Shuffle mode: {shuffle_mode}")
+        socketio.emit('settings_updated', {
+            'shuffle_mode': shuffle_mode,
+            'fade_enabled': fade_enabled,
+            'fade_duration': fade_duration
+        })
+    except Exception as e:
+        logger.error(f"Error toggling shuffle: {e}")
+        emit('error', {'message': 'Error toggling shuffle'})
+
+@socketio.on('toggle_fade')
+def handle_toggle_fade():
+    """Toggle fade in/out effect on/off"""
+    global fade_enabled
+    try:
+        fade_enabled = not fade_enabled
+        logger.info(f"Fade enabled: {fade_enabled}")
+        socketio.emit('settings_updated', {
+            'shuffle_mode': shuffle_mode,
+            'fade_enabled': fade_enabled,
+            'fade_duration': fade_duration
+        })
+    except Exception as e:
+        logger.error(f"Error toggling fade: {e}")
+        emit('error', {'message': 'Error toggling fade'})
+
+@socketio.on('set_fade_duration')
+def handle_set_fade_duration(data):
+    """Set fade duration in seconds"""
+    global fade_duration
+    try:
+        new_duration = float(data.get('duration', 2.0))
+        if 0.5 <= new_duration <= 10.0:
+            fade_duration = new_duration
+            logger.info(f"Fade duration set to: {fade_duration}s")
+            socketio.emit('settings_updated', {
+                'shuffle_mode': shuffle_mode,
+                'fade_enabled': fade_enabled,
+                'fade_duration': fade_duration
+            })
+        else:
+            emit('error', {'message': 'Fade duration must be between 0.5 and 10 seconds'})
+    except Exception as e:
+        logger.error(f"Error setting fade duration: {e}")
+        emit('error', {'message': 'Error setting fade duration'})
 
 @app.route('/seek', methods=['POST'])
 @login_required

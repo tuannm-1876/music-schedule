@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import type { PlaybackState, DownloadState, Song, Schedule } from '@/types';
+import type { PlaybackState, DownloadState, Song, Schedule, PlaybackSettings } from '@/types';
 
 interface SocketContextType {
   socket: Socket | null;
@@ -10,14 +10,19 @@ interface SocketContextType {
   songs: Song[];
   schedules: Schedule[];
   nextSchedule: { time: string; song_title: string } | null;
+  settings: PlaybackSettings;
   setSongs: React.Dispatch<React.SetStateAction<Song[]>>;
   setSchedules: React.Dispatch<React.SetStateAction<Schedule[]>>;
   setPlaybackState: React.Dispatch<React.SetStateAction<PlaybackState>>;
   setNextSchedule: React.Dispatch<React.SetStateAction<{ time: string; song_title: string } | null>>;
+  setSettings: React.Dispatch<React.SetStateAction<PlaybackSettings>>;
   togglePlayPause: () => void;
   stopMusic: () => void;
   setVolume: (volume: number) => void;
   sortUnplayedFirst: () => void;
+  toggleShuffle: () => void;
+  toggleFade: () => void;
+  setFadeDuration: (duration: number) => void;
 }
 
 const defaultPlaybackState: PlaybackState = {
@@ -37,6 +42,12 @@ const defaultDownloadState: DownloadState = {
   error: null,
 };
 
+const defaultSettings: PlaybackSettings = {
+  shuffle_mode: false,
+  fade_enabled: true,
+  fade_duration: 2.0,
+};
+
 const SocketContext = createContext<SocketContextType | null>(null);
 
 export function SocketProvider({ children }: { children: React.ReactNode }) {
@@ -47,6 +58,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const [songs, setSongs] = useState<Song[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [nextSchedule, setNextSchedule] = useState<{ time: string; song_title: string } | null>(null);
+  const [settings, setSettings] = useState<PlaybackSettings>(defaultSettings);
 
   useEffect(() => {
     const socketInstance = io({
@@ -143,6 +155,11 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       setNextSchedule(data.next_schedule);
     });
 
+    // Settings updated
+    socketInstance.on('settings_updated', (data: PlaybackSettings) => {
+      setSettings(data);
+    });
+
     setSocket(socketInstance);
 
     return () => {
@@ -166,6 +183,18 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     socket?.emit('sort_unplayed_first');
   };
 
+  const toggleShuffle = () => {
+    socket?.emit('toggle_shuffle');
+  };
+
+  const toggleFade = () => {
+    socket?.emit('toggle_fade');
+  };
+
+  const setFadeDurationFn = (duration: number) => {
+    socket?.emit('set_fade_duration', { duration });
+  };
+
   return (
     <SocketContext.Provider
       value={{
@@ -176,14 +205,19 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
         songs,
         schedules,
         nextSchedule,
+        settings,
         setSongs,
         setSchedules,
         setPlaybackState,
         setNextSchedule,
+        setSettings,
         togglePlayPause,
         stopMusic,
         setVolume,
         sortUnplayedFirst,
+        toggleShuffle,
+        toggleFade,
+        setFadeDuration: setFadeDurationFn,
       }}
     >
       {children}
