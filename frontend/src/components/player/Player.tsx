@@ -226,7 +226,7 @@ export function Player() {
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: 10, scale: 0.95 }}
                     transition={{ duration: 0.15 }}
-                    className="absolute bottom-full right-0 mb-2 w-72 p-4 glass rounded-lg border border-border shadow-xl overflow-hidden"
+                    className="absolute bottom-full right-0 mb-2 w-72 p-4 bg-card/95 backdrop-blur-xl rounded-lg border border-border shadow-2xl z-50"
                   >
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="text-sm font-medium">Cài đặt phát nhạc</h4>
@@ -241,40 +241,40 @@ export function Player() {
                     </div>
 
                     {/* Shuffle Mode */}
-                    <div className="flex items-center justify-between py-2 border-b border-border">
-                      <div>
+                    <div className="flex items-center justify-between py-3 border-b border-border">
+                      <div className="flex-1 min-w-0 mr-3">
                         <p className="text-sm font-medium">Phát ngẫu nhiên</p>
                         <p className="text-xs text-muted-foreground">Xáo trộn thứ tự phát</p>
                       </div>
                       <button
                         onClick={toggleShuffle}
-                        className={`relative w-10 h-5 rounded-full transition-colors ${
-                          settings.shuffle_mode ? 'bg-primary' : 'bg-muted'
+                        className={`relative flex-shrink-0 w-11 h-6 rounded-full transition-colors duration-200 ${
+                          settings.shuffle_mode ? 'bg-primary' : 'bg-muted-foreground/30'
                         }`}
                       >
                         <span
-                          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                            settings.shuffle_mode ? 'translate-x-5' : 'translate-x-0.5'
+                          className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow-md transition-transform duration-200 ${
+                            settings.shuffle_mode ? 'translate-x-5' : 'translate-x-0'
                           }`}
                         />
                       </button>
                     </div>
 
                     {/* Fade In/Out */}
-                    <div className="flex items-center justify-between py-2 border-b border-border">
-                      <div>
+                    <div className="flex items-center justify-between py-3 border-b border-border">
+                      <div className="flex-1 min-w-0 mr-3">
                         <p className="text-sm font-medium">Fade In/Out</p>
                         <p className="text-xs text-muted-foreground">Chuyển bài mượt mà</p>
                       </div>
                       <button
                         onClick={toggleFade}
-                        className={`relative w-10 h-5 rounded-full transition-colors ${
-                          settings.fade_enabled ? 'bg-primary' : 'bg-muted'
+                        className={`relative flex-shrink-0 w-11 h-6 rounded-full transition-colors duration-200 ${
+                          settings.fade_enabled ? 'bg-primary' : 'bg-muted-foreground/30'
                         }`}
                       >
                         <span
-                          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                            settings.fade_enabled ? 'translate-x-5' : 'translate-x-0.5'
+                          className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow-md transition-transform duration-200 ${
+                            settings.fade_enabled ? 'translate-x-5' : 'translate-x-0'
                           }`}
                         />
                       </button>

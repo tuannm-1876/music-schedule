@@ -2,7 +2,7 @@
 import eventlet
 eventlet.monkey_patch()
 
-from flask import Flask, render_template, jsonify, request, redirect, url_for, send_file, session, flash
+from flask import Flask, render_template, jsonify, request, redirect, url_for, send_file, session, flash, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -1256,83 +1256,8 @@ def api_logout():
 @app.route('/')
 @login_required
 def index():
-    try:
-        # Get disk usage information
-        disk_usage = get_disk_usage()
-        
-        with session_scope() as session:
-            songs = session.query(Song).order_by(
-                Song.position.asc(),
-                Song.last_played_at.is_(None).desc(),
-                Song.priority.desc(),
-                Song.last_played_at.asc()
-            ).all()
-
-            for song in songs:
-                actual_filename = find_actual_file(song.filename)
-                if actual_filename != song.filename:
-                    song.filename = actual_filename
-
-            schedules = session.query(Schedule).order_by(Schedule.time).all()
-            
-            # Get next scheduled song info within the same session
-            now = datetime.now()
-            current_time = now.strftime("%H:%M")
-            weekday = now.strftime("%A").lower()
-
-            next_schedules = session.query(Schedule).filter(
-                Schedule.time > current_time,
-                Schedule.enabled == True
-            ).order_by(Schedule.time).all()
-            
-            if not next_schedules:
-                next_schedules = session.query(Schedule).filter(
-                    Schedule.enabled == True
-                ).order_by(Schedule.time).all()
-            
-            next_song_info = None
-            valid_schedules = [s for s in next_schedules if getattr(s, weekday)]
-            
-            if valid_schedules:
-                next_schedule = valid_schedules[0]
-                next_song_to_play = session.query(Song).order_by(
-                    Song.position.asc(),
-                    Song.last_played_at.is_(None).desc(),
-                    Song.priority.desc(),
-                    Song.last_played_at.asc()
-                ).first()
-
-                weekdays = [day for day, enabled in next_schedule.weekdays.items() if enabled]
-                next_song_info = {
-                    'time': next_schedule.time,
-                    'weekdays': weekdays,
-                    'song': next_song_to_play.title if next_song_to_play else None
-                }
-
-            # Get current song from session if exists
-            current_song = None
-            current_pos = 0
-            if current_song_id:
-                current_song = session.get(Song, current_song_id)
-                if pygame.mixer.music.get_busy():
-                    pos = pygame.mixer.music.get_pos()
-                    if pos >= 0:
-                        current_pos = pos / 1000
-
-            return render_template('index.html',
-                               songs=songs,
-                               schedules=schedules,
-                               next_song=next_song_info,
-                               current_song=current_song,
-                               current_position=current_pos,
-                               is_playing=is_playing,
-                               volume=volume,
-                               disk_usage=disk_usage,
-                               ytdlp_version=get_ytdlp_version(),
-                               download_state=get_download_state())
-    except Exception as e:
-        logger.error(f"Error rendering index page: {e}")
-        return "Internal Server Error", 500
+    # Serve React frontend
+    return send_from_directory('static/react', 'index.html')
 
 @app.route('/set-volume/<value>')
 @login_required
@@ -2072,28 +1997,32 @@ def login():
     """Login route"""
     if 'user_id' in session:
         return redirect(url_for('index'))
-        
-    error = None
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
-        if not username or not password:
-            error = "Please provide both username and password"
-        else:
-            with session_scope() as db_session:
-                user = db_session.query(User).filter_by(username=username).first()
-                
-                if user and user.check_password(password):
-                    session['user_id'] = user.id
-                    session['username'] = user.username
-                    
-                    # Redirect to requested page or default to index
-                    next_page = request.args.get('next', url_for('index'))
-                    return redirect(next_page)
-                else:
-                    error = "Invalid username or password"
     
+    # GET request - serve React frontend
+    if request.method == 'GET':
+        return send_from_directory('static/react', 'index.html')
+        
+    # POST request - handle login API
+    error = None
+    username = request.form.get('username')
+    password = request.form.get('password')
+    
+    if not username or not password:
+        error = "Please provide both username and password"
+    else:
+        with session_scope() as db_session:
+            user = db_session.query(User).filter_by(username=username).first()
+            
+            if user and user.check_password(password):
+                session['user_id'] = user.id
+                session['username'] = user.username
+                
+                # Redirect to requested page or default to index
+                next_page = request.args.get('next', url_for('index'))
+                return redirect(next_page)
+            else:
+                error = "Invalid username or password"
+
     return render_template('login.html', error=error)
 
 @app.route('/logout')
