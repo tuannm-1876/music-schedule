@@ -1491,6 +1491,7 @@ def add_music():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/upload-music', methods=['POST'])
+@csrf.exempt
 @login_required
 def upload_music():
     if 'file' not in request.files:
