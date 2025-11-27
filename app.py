@@ -419,6 +419,16 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+# Create a decorator for SocketIO events that require authentication
+def socketio_login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            emit('error', {'message': 'Unauthorized. Please login.'})
+            return
+        return f(*args, **kwargs)
+    return decorated_function
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -1615,6 +1625,7 @@ def play(id):
     return jsonify({'success': success})
 
 @socketio.on('toggle_play_pause')
+@socketio_login_required
 def handle_toggle_play_pause():
     global is_playing, current_position, current_song_id
     try:
@@ -1646,6 +1657,7 @@ def handle_toggle_play_pause():
         emit('error', {'message': 'Error toggling playback'})
 
 @socketio.on('stop_music')
+@socketio_login_required
 def handle_stop():
     global current_song_id, current_song_duration, is_playing, current_position
     try:
@@ -1670,6 +1682,7 @@ def handle_stop():
         emit('stop_error', {'error': str(e)})
 
 @socketio.on('toggle_shuffle')
+@socketio_login_required
 def handle_toggle_shuffle():
     """Toggle shuffle mode on/off"""
     global shuffle_mode
@@ -1686,6 +1699,7 @@ def handle_toggle_shuffle():
         emit('error', {'message': 'Error toggling shuffle'})
 
 @socketio.on('toggle_fade')
+@socketio_login_required
 def handle_toggle_fade():
     """Toggle fade in/out effect on/off"""
     global fade_enabled
@@ -1702,6 +1716,7 @@ def handle_toggle_fade():
         emit('error', {'message': 'Error toggling fade'})
 
 @socketio.on('set_fade_duration')
+@socketio_login_required
 def handle_set_fade_duration(data):
     """Set fade duration in seconds"""
     global fade_duration
@@ -1898,6 +1913,7 @@ def stream(id):
         return jsonify({'success': False, 'message': 'Error streaming file'}), 500
 
 @socketio.on('set_volume')
+@socketio_login_required
 def handle_volume(data):
     global volume
     try:
@@ -1998,6 +2014,7 @@ def reset_playlist_order():
         return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
 
 @socketio.on('sort_unplayed_first')
+@socketio_login_required
 def handle_sort_unplayed_first():
     """Sort unplayed songs to the top of the playlist via socket"""
     try:
@@ -2144,6 +2161,7 @@ REACT_BUILD_DIR = os.path.join(BASE_DIR, 'static', 'react')
 @app.route('/app')
 @app.route('/app/')
 @app.route('/app/<path:path>')
+@login_required
 def serve_react(path=''):
     """Serve React frontend for production"""
     if path and os.path.exists(os.path.join(REACT_BUILD_DIR, path)):
@@ -2151,6 +2169,7 @@ def serve_react(path=''):
     return send_file(os.path.join(REACT_BUILD_DIR, 'index.html'))
 
 @app.route('/assets/<path:filename>')
+@login_required
 def serve_react_assets(filename):
     """Serve React static assets"""
     return send_file(os.path.join(REACT_BUILD_DIR, 'assets', filename))
