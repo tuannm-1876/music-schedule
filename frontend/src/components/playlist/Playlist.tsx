@@ -10,7 +10,8 @@ import {
   Clock,
   ArrowUpDown,
   Megaphone,
-  ChevronDown
+  ChevronDown,
+  Trash
 } from 'lucide-react';
 import { useSocket } from '@/contexts/SocketContext';
 import { useToast } from '@/contexts/ToastContext';
@@ -62,6 +63,20 @@ export function Playlist() {
     } catch (error) {
       console.error('Failed to update category:', error);
       addToast('error', 'Không thể cập nhật loại bài');
+    }
+  };
+
+  const handleToggleDeleteAfterPlay = async (songId: number) => {
+    try {
+      const response = await musicApi.toggleDeleteAfterPlay(songId);
+      const newValue = response.data.song.delete_after_play;
+      setSongs((prev) =>
+        prev.map((s) => (s.id === songId ? { ...s, delete_after_play: newValue } : s))
+      );
+      addToast('success', newValue ? 'Sẽ xóa sau khi phát' : 'Đã tắt xóa sau khi phát');
+    } catch (error) {
+      console.error('Failed to toggle delete after play:', error);
+      addToast('error', 'Không thể cập nhật cài đặt');
     }
   };
 
@@ -196,6 +211,7 @@ export function Playlist() {
                     onPlay={() => handlePlay(song.id)}
                     onDelete={() => handleDelete(song.id)}
                     onCategoryChange={(cat) => handleCategoryChange(song.id, cat)}
+                    onToggleDeleteAfterPlay={() => handleToggleDeleteAfterPlay(song.id)}
                     getSourceIcon={getSourceIcon}
                   />
                 </Reorder.Item>
@@ -216,6 +232,7 @@ interface SongItemProps {
   onPlay: () => void;
   onDelete: () => void;
   onCategoryChange: (category: SongCategory) => void;
+  onToggleDeleteAfterPlay: () => void;
   getSourceIcon: (source: string) => React.ReactNode;
 }
 
@@ -227,6 +244,7 @@ function SongItem({
   onPlay,
   onDelete,
   onCategoryChange,
+  onToggleDeleteAfterPlay,
   getSourceIcon,
 }: SongItemProps) {
   const [showActions, setShowActions] = useState(false);
@@ -369,6 +387,14 @@ function SongItem({
         </AnimatePresence>
       </div>
 
+      {/* Delete After Play Badge */}
+      {song.delete_after_play && (
+        <div className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-red-500/20 text-red-600 dark:text-red-400">
+          <Trash className="w-3 h-3" />
+          Xóa sau phát
+        </div>
+      )}
+
       {/* Actions */}
       <AnimatePresence>
         {(showActions || isDeleting) && (
@@ -378,6 +404,19 @@ function SongItem({
             exit={{ opacity: 0, x: 10 }}
             className="flex items-center gap-1"
           >
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onToggleDeleteAfterPlay}
+              title={song.delete_after_play ? 'Tắt xóa sau khi phát' : 'Xóa sau khi phát'}
+              className={`h-8 w-8 ${
+                song.delete_after_play 
+                  ? 'text-red-500 hover:text-red-600 hover:bg-red-500/10' 
+                  : 'text-muted-foreground hover:text-red-500 hover:bg-red-500/10'
+              }`}
+            >
+              <Trash className="w-4 h-4" />
+            </Button>
             <Button
               variant="ghost"
               size="icon"

@@ -55,6 +55,8 @@ export const musicApi = {
   cancelDownload: () => api.post('/cancel-download'),
   updateCategory: (songId: number, category: 'music' | 'announcement') =>
     api.post(`/update-song-category/${songId}`, { category }),
+  toggleDeleteAfterPlay: (songId: number) =>
+    api.post(`/toggle-delete-after-play/${songId}`),
 };
 
 export const scheduleApi = {

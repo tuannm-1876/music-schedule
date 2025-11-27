@@ -100,9 +100,16 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     });
 
     // Song finished
-    socketInstance.on('song_finished', (data: { songs: Song[]; next_schedule: { time: string; song_title: string } | null }) => {
-      setSongs(data.songs);
-      setNextSchedule(data.next_schedule);
+    socketInstance.on('song_finished', (data: { songs?: Song[]; next_schedule?: { time: string; song_title: string } | null; deleted_song_id?: number }) => {
+      if (data.songs) {
+        setSongs(data.songs);
+      } else if (data.deleted_song_id) {
+        // Remove the deleted song from the list
+        setSongs(prev => prev.filter(s => s.id !== data.deleted_song_id));
+      }
+      if (data.next_schedule !== undefined) {
+        setNextSchedule(data.next_schedule);
+      }
     });
 
     // Song added

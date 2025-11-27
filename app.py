@@ -266,14 +266,33 @@ def broadcast_playback_state():
         elif not music_busy and is_playing and current_song_id:
             # Song has finished playing
             logger.info(f"Song finished playing: {current_song_id}")
+            finished_song_id = current_song_id
             current_position = 0
             current_song_id = None
             current_song_duration = 0
             is_playing = False
             
+            # Check if song should be deleted after playing
+            deleted_song_id = None
+            try:
+                with app.app_context():
+                    with session_scope() as session:
+                        song = session.get(Song, finished_song_id)
+                        if song and song.delete_after_play:
+                            logger.info(f"Deleting song after play: {song.title}")
+                            deleted_song_id = song.id
+                            actual_filename = find_actual_file(song.filename)
+                            filepath = os.path.join(BASE_DIR, actual_filename)
+                            if os.path.exists(filepath):
+                                os.remove(filepath)
+                            session.delete(song)
+            except Exception as e:
+                logger.error(f"Error deleting song after play: {e}")
+            
             # Emit song finished event
             socketio.emit('song_finished', {
-                'message': 'Song playback completed'
+                'message': 'Song playback completed',
+                'deleted_song_id': deleted_song_id
             })
 
         # Get current song title
@@ -374,6 +393,7 @@ class Song(db.Model):
     priority = db.Column(db.Integer, default=0)
     position = db.Column(db.Integer, default=0)  # New field for song ordering
     category = db.Column(db.String(20), default='music')  # 'music' or 'announcement'
+    delete_after_play = db.Column(db.Boolean, default=False)  # Delete song after playing
     source = db.Column(db.String(50))
     duration = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -1137,6 +1157,7 @@ def api_initial_state():
                 'file_path': s.filename,
                 'position': s.position,
                 'category': s.category or 'music',
+                'delete_after_play': s.delete_after_play or False,
                 'last_played_at': s.last_played_at.isoformat() if s.last_played_at else None,
                 'priority': s.priority,
                 'created_at': s.created_at.isoformat() if s.created_at else None
@@ -1834,6 +1855,32 @@ def update_song_category(id):
             })
     except Exception as e:
         logger.error(f"Error updating song category {id}: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/toggle-delete-after-play/<int:id>', methods=['POST'])
+@login_required
+@csrf.exempt
+def toggle_delete_after_play(id):
+    """Toggle delete_after_play option for a song"""
+    try:
+        with session_scope() as session:
+            song = session.get(Song, id)
+            if not song:
+                return jsonify({'success': False, 'message': 'Song not found'}), 404
+            
+            song.delete_after_play = not song.delete_after_play
+            logger.info(f"Toggled delete_after_play for song {id}: {song.delete_after_play}")
+            
+            return jsonify({
+                'success': True,
+                'song': {
+                    'id': song.id,
+                    'title': song.title,
+                    'delete_after_play': song.delete_after_play
+                }
+            })
+    except Exception as e:
+        logger.error(f"Error toggling delete_after_play for song {id}: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/stream/<int:id>')

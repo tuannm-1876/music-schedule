@@ -10,6 +10,7 @@ export interface Song {
   file_path: string;
   position: number;
   category: SongCategory;
+  delete_after_play: boolean;
   last_played_at: string | null;
   priority: number;
   created_at: string;
