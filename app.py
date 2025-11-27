@@ -346,6 +346,7 @@ class Schedule(db.Model):
     time = db.Column(db.String(5), nullable=False)  # Format: "HH:MM"
     enabled = db.Column(db.Boolean, default=True)
     one_time = db.Column(db.Boolean, default=False)  # If True, disable after playing once
+    song_category = db.Column(db.String(20), default='music')  # 'music', 'announcement', or 'all'
     monday = db.Column(db.Boolean, default=True)
     tuesday = db.Column(db.Boolean, default=True)
     wednesday = db.Column(db.Boolean, default=True)
@@ -372,6 +373,7 @@ class Song(db.Model):
     filename = db.Column(db.String(200), nullable=False, unique=True)
     priority = db.Column(db.Integer, default=0)
     position = db.Column(db.Integer, default=0)  # New field for song ordering
+    category = db.Column(db.String(20), default='music')  # 'music' or 'announcement'
     source = db.Column(db.String(50))
     duration = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -633,8 +635,9 @@ def schedule_music():
                             now = datetime.now()
                             schedule_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
                             
-                            # Pass schedule_id and one_time flag to the job
-                            job_args = [schedule.id, schedule.one_time]
+                            # Pass schedule_id, one_time flag, and song_category to the job
+                            song_category = schedule.song_category or 'music'
+                            job_args = [schedule.id, schedule.one_time, song_category]
                             
                             if schedule_time > now:
                                 scheduler.add_job(
@@ -648,7 +651,7 @@ def schedule_music():
                                     replace_existing=True,
                                     next_run_time=schedule_time
                                 )
-                                logger.info(f"Added job {job_id} with next run today at {schedule_time}, one_time={schedule.one_time}")
+                                logger.info(f"Added job {job_id} with next run today at {schedule_time}, one_time={schedule.one_time}, category={song_category}")
                             else:
                                 scheduler.add_job(
                                     play_next_song,
@@ -660,7 +663,7 @@ def schedule_music():
                                     args=job_args,
                                     replace_existing=True
                                 )
-                                logger.info(f"Added job {job_id} for days: {','.join(days_of_week)} at {hour:02d}:{minute:02d}, one_time={schedule.one_time}")
+                                logger.info(f"Added job {job_id} for days: {','.join(days_of_week)} at {hour:02d}:{minute:02d}, one_time={schedule.one_time}, category={song_category}")
                         else:
                             logger.warning(f"Schedule {schedule.id} has no enabled days, skipping")
                     except ValueError as e:
@@ -691,19 +694,24 @@ def schedule_music():
                 logger.error(f"Failed to restore broadcast job: {e}")
             return False
 
-def play_next_song(schedule_id=None, one_time=False):
+def play_next_song(schedule_id=None, one_time=False, song_category='music'):
     with app.app_context():
-        logger.info(f"Scheduler triggered play next song (schedule_id={schedule_id}, one_time={one_time}, shuffle={shuffle_mode})")
+        logger.info(f"Scheduler triggered play next song (schedule_id={schedule_id}, one_time={one_time}, shuffle={shuffle_mode}, category={song_category})")
         try:
             with session_scope() as session:
+                # Build base query with category filter
+                base_query = session.query(Song)
+                if song_category and song_category != 'all':
+                    base_query = base_query.filter(Song.category == song_category)
+                
                 if shuffle_mode:
-                    # Shuffle mode: pick a random song
+                    # Shuffle mode: pick a random song from filtered category
                     from sqlalchemy.sql.expression import func
-                    next_song = session.query(Song).order_by(func.random()).first()
-                    logger.info(f"Shuffle mode: randomly selected song")
+                    next_song = base_query.order_by(func.random()).first()
+                    logger.info(f"Shuffle mode: randomly selected song from category '{song_category}'")
                 else:
                     # Normal mode: prioritize songs that haven't been played
-                    next_song = session.query(Song).order_by(
+                    next_song = base_query.order_by(
                         Song.position.asc(),
                         Song.last_played_at.is_(None).desc(),
                         Song.priority.desc(),
@@ -711,12 +719,13 @@ def play_next_song(schedule_id=None, one_time=False):
                     ).first()
 
                 if next_song:
-                    logger.info(f"Playing song: {next_song.title}")
+                    logger.info(f"Playing song: {next_song.title} (category: {next_song.category})")
                     # Trigger playlist update through socket
                     socketio.emit('schedule_triggered', {
                         'song_id': next_song.id,
                         'title': next_song.title,
-                        'time': datetime.now().strftime("%H:%M")
+                        'time': datetime.now().strftime("%H:%M"),
+                        'category': next_song.category
                     })
                     play_music(next_song.id)
                     
@@ -732,7 +741,7 @@ def play_next_song(schedule_id=None, one_time=False):
                                 'is_active': False
                             })
                 else:
-                    logger.warning("No songs found in the playlist")
+                    logger.warning(f"No songs found in category '{song_category}'")
                     
             # Broadcast next schedule update after potential disable
             if one_time and schedule_id:
@@ -1127,6 +1136,7 @@ def api_initial_state():
                 'source': s.source,
                 'file_path': s.filename,
                 'position': s.position,
+                'category': s.category or 'music',
                 'last_played_at': s.last_played_at.isoformat() if s.last_played_at else None,
                 'priority': s.priority,
                 'created_at': s.created_at.isoformat() if s.created_at else None
@@ -1139,6 +1149,7 @@ def api_initial_state():
                 'time': s.time,
                 'is_active': s.enabled,
                 'one_time': s.one_time,
+                'song_category': s.song_category or 'music',
                 'monday': s.monday,
                 'tuesday': s.tuesday,
                 'wednesday': s.wednesday,
@@ -1168,7 +1179,11 @@ def api_initial_state():
             
             if valid_schedules:
                 next_schedule = valid_schedules[0]
-                next_song_to_play = db_session.query(Song).order_by(
+                # Filter songs by schedule's song_category
+                song_query = db_session.query(Song)
+                if next_schedule.song_category and next_schedule.song_category != 'all':
+                    song_query = song_query.filter(Song.category == next_schedule.song_category)
+                next_song_to_play = song_query.order_by(
                     Song.position.asc(),
                     Song.last_played_at.is_(None).desc(),
                     Song.priority.desc(),
@@ -1177,7 +1192,8 @@ def api_initial_state():
                 
                 next_schedule_info = {
                     'time': next_schedule.time,
-                    'song_title': next_song_to_play.title if next_song_to_play else 'Không có bài hát'
+                    'song_title': next_song_to_play.title if next_song_to_play else 'Không có bài hát',
+                    'song_category': next_schedule.song_category or 'music'
                 }
             
             # Get current song title
@@ -1285,14 +1301,20 @@ def add_schedule():
         data = request.get_json()
         time = data.get('time')
         one_time = data.get('one_time', False)
+        song_category = data.get('song_category', 'music')
         weekdays_selected = [day for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] if data.get(day)]
     else:
         time = request.form.get('time')
         one_time = request.form.get('one_time') == 'true'
+        song_category = request.form.get('song_category', 'music')
         weekdays_selected = request.form.getlist('weekdays')
     
     if not time:
         return jsonify({'success': False, 'message': 'Time is required'}), 400
+    
+    # Validate song_category
+    if song_category not in ['music', 'announcement', 'all']:
+        song_category = 'music'
 
     try:
         datetime.strptime(time, '%H:%M')
@@ -1300,6 +1322,7 @@ def add_schedule():
         with session_scope() as session:
             schedule = Schedule(time=time)
             schedule.one_time = one_time
+            schedule.song_category = song_category
             schedule.monday = 'monday' in weekdays_selected
             schedule.tuesday = 'tuesday' in weekdays_selected
             schedule.wednesday = 'wednesday' in weekdays_selected
@@ -1316,6 +1339,7 @@ def add_schedule():
                 'time': schedule.time,
                 'is_active': schedule.enabled,
                 'one_time': schedule.one_time,
+                'song_category': schedule.song_category,
                 'monday': schedule.monday,
                 'tuesday': schedule.tuesday,
                 'wednesday': schedule.wednesday,
@@ -1778,6 +1802,38 @@ def delete_song(id):
             return jsonify({'success': True})
     except Exception as e:
         logger.error(f"Error deleting song {id}: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/update-song-category/<int:id>', methods=['POST'])
+@login_required
+@csrf.exempt
+def update_song_category(id):
+    """Update song category (music or announcement)"""
+    try:
+        data = request.get_json()
+        category = data.get('category', 'music')
+        
+        if category not in ['music', 'announcement']:
+            return jsonify({'success': False, 'message': 'Invalid category. Must be "music" or "announcement"'}), 400
+        
+        with session_scope() as session:
+            song = session.get(Song, id)
+            if not song:
+                return jsonify({'success': False, 'message': 'Song not found'}), 404
+            
+            song.category = category
+            logger.info(f"Updated song {id} category to {category}")
+            
+            return jsonify({
+                'success': True,
+                'song': {
+                    'id': song.id,
+                    'title': song.title,
+                    'category': song.category
+                }
+            })
+    except Exception as e:
+        logger.error(f"Error updating song category {id}: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/stream/<int:id>')

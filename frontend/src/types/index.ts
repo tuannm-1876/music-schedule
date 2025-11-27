@@ -1,3 +1,6 @@
+// Song category type
+export type SongCategory = 'music' | 'announcement';
+
 // Song type
 export interface Song {
   id: number;
@@ -6,10 +9,14 @@ export interface Song {
   source: string;
   file_path: string;
   position: number;
+  category: SongCategory;
   last_played_at: string | null;
   priority: number;
   created_at: string;
 }
+
+// Schedule song category type (includes 'all' option)
+export type ScheduleSongCategory = 'music' | 'announcement' | 'all';
 
 // Schedule type
 export interface Schedule {
@@ -17,6 +24,7 @@ export interface Schedule {
   time: string;
   is_active: boolean;
   one_time: boolean;
+  song_category: ScheduleSongCategory;
   monday: boolean;
   tuesday: boolean;
   wednesday: boolean;

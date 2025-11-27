@@ -8,20 +8,23 @@ import {
   Youtube,
   Upload,
   Clock,
-  ArrowUpDown
+  ArrowUpDown,
+  Megaphone,
+  ChevronDown
 } from 'lucide-react';
 import { useSocket } from '@/contexts/SocketContext';
 import { useToast } from '@/contexts/ToastContext';
 import { Button, Card } from '@/components/ui';
 import { musicApi } from '@/lib/api';
 import { formatDuration } from '@/lib/utils';
-import type { Song } from '@/types';
+import type { Song, SongCategory } from '@/types';
 
 export function Playlist() {
   const { songs, setSongs, playbackState, sortUnplayedFirst } = useSocket();
   const { addToast } = useToast();
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [playingId, setPlayingId] = useState<number | null>(null);
+  const [filterCategory, setFilterCategory] = useState<SongCategory | 'all'>('all');
 
   const handlePlay = async (songId: number) => {
     setPlayingId(songId);
@@ -49,6 +52,19 @@ export function Playlist() {
     }
   };
 
+  const handleCategoryChange = async (songId: number, newCategory: SongCategory) => {
+    try {
+      await musicApi.updateCategory(songId, newCategory);
+      setSongs((prev) =>
+        prev.map((s) => (s.id === songId ? { ...s, category: newCategory } : s))
+      );
+      addToast('success', `Đã chuyển sang ${newCategory === 'music' ? 'Nhạc' : 'Truyền thông'}`);
+    } catch (error) {
+      console.error('Failed to update category:', error);
+      addToast('error', 'Không thể cập nhật loại bài');
+    }
+  };
+
   const handleReorder = async (newOrder: Song[]) => {
     setSongs(newOrder);
     try {
@@ -71,36 +87,83 @@ export function Playlist() {
     return <Upload className="w-3 h-3 text-blue-500" />;
   };
 
+  // Filter songs by category
+  const filteredSongs = filterCategory === 'all' 
+    ? songs 
+    : songs.filter(s => (s.category || 'music') === filterCategory);
+
+  // Count by category
+  const musicCount = songs.filter(s => (s.category || 'music') === 'music').length;
+  const announcementCount = songs.filter(s => s.category === 'announcement').length;
+
   return (
     <Card className="overflow-hidden">
       {/* Header */}
-      <div className="p-4 border-b border-border flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-primary/20 to-purple-500/20 flex items-center justify-center">
-            <Music className="w-5 h-5 text-primary" />
+      <div className="p-4 border-b border-border">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-primary/20 to-purple-500/20 flex items-center justify-center">
+              <Music className="w-5 h-5 text-primary" />
+            </div>
+            <div>
+              <h2 className="font-semibold">Playlist</h2>
+              <p className="text-sm text-muted-foreground">
+                {songs.length} bài hát
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="font-semibold">Playlist</h2>
-            <p className="text-sm text-muted-foreground">
-              {songs.length} bài hát
-            </p>
-          </div>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSortUnplayed}
+            className="gap-2"
+          >
+            <ArrowUpDown className="w-4 h-4" />
+            Sắp xếp
+          </Button>
         </div>
 
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleSortUnplayed}
-          className="gap-2"
-        >
-          <ArrowUpDown className="w-4 h-4" />
-          Sắp xếp
-        </Button>
+        {/* Category Filter Tabs */}
+        <div className="flex gap-2">
+          <button
+            onClick={() => setFilterCategory('all')}
+            className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+              filterCategory === 'all'
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-muted hover:bg-muted/80'
+            }`}
+          >
+            Tất cả ({songs.length})
+          </button>
+          <button
+            onClick={() => setFilterCategory('music')}
+            className={`px-3 py-1.5 text-sm rounded-lg transition-colors flex items-center gap-1.5 ${
+              filterCategory === 'music'
+                ? 'bg-blue-500 text-white'
+                : 'bg-muted hover:bg-muted/80'
+            }`}
+          >
+            <Music className="w-3.5 h-3.5" />
+            Nhạc ({musicCount})
+          </button>
+          <button
+            onClick={() => setFilterCategory('announcement')}
+            className={`px-3 py-1.5 text-sm rounded-lg transition-colors flex items-center gap-1.5 ${
+              filterCategory === 'announcement'
+                ? 'bg-orange-500 text-white'
+                : 'bg-muted hover:bg-muted/80'
+            }`}
+          >
+            <Megaphone className="w-3.5 h-3.5" />
+            Truyền thông ({announcementCount})
+          </button>
+        </div>
       </div>
 
       {/* Song List */}
       <div className="divide-y divide-border max-h-[600px] overflow-y-auto">
-        {songs.length === 0 ? (
+        {filteredSongs.length === 0 ? (
           <div className="p-8 text-center">
             <Music className="w-12 h-12 mx-auto text-muted-foreground/50 mb-3" />
             <p className="text-muted-foreground">Chưa có bài hát nào</p>
@@ -111,12 +174,12 @@ export function Playlist() {
         ) : (
           <Reorder.Group
             axis="y"
-            values={songs}
+            values={filteredSongs}
             onReorder={handleReorder}
             className="divide-y divide-border"
           >
             <AnimatePresence>
-              {songs.map((song, index) => (
+              {filteredSongs.map((song, index) => (
                 <Reorder.Item
                   key={song.id}
                   value={song}
@@ -132,6 +195,7 @@ export function Playlist() {
                     isDeleting={deletingId === song.id}
                     onPlay={() => handlePlay(song.id)}
                     onDelete={() => handleDelete(song.id)}
+                    onCategoryChange={(cat) => handleCategoryChange(song.id, cat)}
                     getSourceIcon={getSourceIcon}
                   />
                 </Reorder.Item>
@@ -151,6 +215,7 @@ interface SongItemProps {
   isDeleting: boolean;
   onPlay: () => void;
   onDelete: () => void;
+  onCategoryChange: (category: SongCategory) => void;
   getSourceIcon: (source: string) => React.ReactNode;
 }
 
@@ -161,9 +226,19 @@ function SongItem({
   isDeleting,
   onPlay,
   onDelete,
+  onCategoryChange,
   getSourceIcon,
 }: SongItemProps) {
   const [showActions, setShowActions] = useState(false);
+  const [showCategoryMenu, setShowCategoryMenu] = useState(false);
+
+  const categoryConfig = {
+    music: { label: 'Nhạc', color: 'bg-blue-500/20 text-blue-600 dark:text-blue-400', icon: Music },
+    announcement: { label: 'Truyền thông', color: 'bg-orange-500/20 text-orange-600 dark:text-orange-400', icon: Megaphone },
+  };
+
+  const currentCategory = song.category || 'music';
+  const config = categoryConfig[currentCategory];
 
   return (
     <motion.div
@@ -242,6 +317,56 @@ function SongItem({
             </>
           )}
         </div>
+      </div>
+
+      {/* Category Badge with Dropdown */}
+      <div className="relative">
+        <button
+          onClick={() => setShowCategoryMenu(!showCategoryMenu)}
+          className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${config.color}`}
+        >
+          <config.icon className="w-3 h-3" />
+          {config.label}
+          <ChevronDown className="w-3 h-3" />
+        </button>
+
+        <AnimatePresence>
+          {showCategoryMenu && (
+            <motion.div
+              initial={{ opacity: 0, y: -5, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -5, scale: 0.95 }}
+              className="absolute right-0 top-full mt-1 z-50 bg-card border border-border rounded-lg shadow-lg overflow-hidden min-w-[140px]"
+            >
+              <button
+                onClick={() => {
+                  onCategoryChange('music');
+                  setShowCategoryMenu(false);
+                }}
+                className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors ${
+                  currentCategory === 'music' ? 'bg-primary/10' : ''
+                }`}
+              >
+                <Music className="w-4 h-4 text-blue-500" />
+                Nhạc
+                {currentCategory === 'music' && <span className="ml-auto text-primary">✓</span>}
+              </button>
+              <button
+                onClick={() => {
+                  onCategoryChange('announcement');
+                  setShowCategoryMenu(false);
+                }}
+                className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors ${
+                  currentCategory === 'announcement' ? 'bg-primary/10' : ''
+                }`}
+              >
+                <Megaphone className="w-4 h-4 text-orange-500" />
+                Truyền thông
+                {currentCategory === 'announcement' && <span className="ml-auto text-primary">✓</span>}
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Actions */}

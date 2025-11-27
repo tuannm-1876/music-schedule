@@ -53,12 +53,15 @@ export const musicApi = {
   resetOrder: () => api.post('/reset-playlist-order'),
   setVolume: (volume: number) => api.post('/set-volume', { volume }),
   cancelDownload: () => api.post('/cancel-download'),
+  updateCategory: (songId: number, category: 'music' | 'announcement') =>
+    api.post(`/update-song-category/${songId}`, { category }),
 };
 
 export const scheduleApi = {
   add: (data: {
     time: string;
     one_time?: boolean;
+    song_category?: 'music' | 'announcement' | 'all';
     monday: boolean;
     tuesday: boolean;
     wednesday: boolean;

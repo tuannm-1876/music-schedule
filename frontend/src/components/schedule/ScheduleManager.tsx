@@ -8,14 +8,17 @@ import {
   ChevronDown,
   ChevronUp,
   Loader2,
-  Zap
+  Zap,
+  Music,
+  Megaphone,
+  ListMusic
 } from 'lucide-react';
 import { useSocket } from '@/contexts/SocketContext';
 import { useToast } from '@/contexts/ToastContext';
 import { Button, Card, Input, Switch } from '@/components/ui';
 import { scheduleApi } from '@/lib/api';
 import { getWeekdayLabel, WEEKDAYS } from '@/lib/utils';
-import type { Schedule } from '@/types';
+import type { Schedule, ScheduleSongCategory } from '@/types';
 
 export function ScheduleManager() {
   const { schedules, setSchedules } = useSocket();
@@ -29,6 +32,7 @@ export function ScheduleManager() {
   // Form state
   const [time, setTime] = useState('08:00');
   const [oneTime, setOneTime] = useState(false);
+  const [songCategory, setSongCategory] = useState<ScheduleSongCategory>('music');
   const [selectedDays, setSelectedDays] = useState<Record<string, boolean>>({
     monday: true,
     tuesday: true,
@@ -38,6 +42,16 @@ export function ScheduleManager() {
     saturday: false,
     sunday: false,
   });
+
+  const categoryOptions = [
+    { value: 'music' as const, label: 'Nhạc', icon: Music, color: 'text-blue-500' },
+    { value: 'announcement' as const, label: 'Truyền thông', icon: Megaphone, color: 'text-orange-500' },
+    { value: 'all' as const, label: 'Tất cả', icon: ListMusic, color: 'text-purple-500' },
+  ];
+
+  const getCategoryConfig = (cat: ScheduleSongCategory) => {
+    return categoryOptions.find(c => c.value === cat) || categoryOptions[0];
+  };
 
   const handleAddSchedule = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -53,6 +67,7 @@ export function ScheduleManager() {
       const response = await scheduleApi.add({
         time,
         one_time: oneTime,
+        song_category: songCategory,
         monday: selectedDays.monday,
         tuesday: selectedDays.tuesday,
         wednesday: selectedDays.wednesday,
@@ -69,6 +84,7 @@ export function ScheduleManager() {
       // Reset form
       setTime('08:00');
       setOneTime(false);
+      setSongCategory('music');
       setSelectedDays({
         monday: true,
         tuesday: true,
@@ -158,7 +174,9 @@ export function ScheduleManager() {
           >
             <div className="px-4 pb-4 space-y-3">
               {/* Schedule List */}
-              {schedules.map((schedule) => (
+              {schedules.map((schedule) => {
+                const catConfig = getCategoryConfig(schedule.song_category || 'music');
+                return (
                 <motion.div
                   key={schedule.id}
                   initial={{ opacity: 0, y: 10 }}
@@ -182,6 +200,10 @@ export function ScheduleManager() {
                             Một lần
                           </span>
                         )}
+                        <span className={`px-2 py-0.5 text-xs rounded-full bg-muted flex items-center gap-1 ${catConfig.color}`}>
+                          <catConfig.icon className="w-3 h-3" />
+                          {catConfig.label}
+                        </span>
                       </div>
                     </div>
 
@@ -223,7 +245,8 @@ export function ScheduleManager() {
                     ))}
                   </div>
                 </motion.div>
-              ))}
+              );
+              })}
 
               {schedules.length === 0 && !showAddForm && (
                 <div className="py-6 text-center">
@@ -266,6 +289,28 @@ export function ScheduleManager() {
                       <Zap className="w-4 h-4 text-amber-500" />
                       <span className="text-sm">Chỉ phát một lần (tự tắt sau khi phát)</span>
                     </label>
+
+                    {/* Song Category Selector */}
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">Loại bài phát:</label>
+                      <div className="flex gap-2">
+                        {categoryOptions.map((cat) => (
+                          <button
+                            key={cat.value}
+                            type="button"
+                            onClick={() => setSongCategory(cat.value)}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-all ${
+                              songCategory === cat.value
+                                ? 'bg-primary text-primary-foreground'
+                                : 'bg-muted hover:bg-muted/80'
+                            }`}
+                          >
+                            <cat.icon className="w-4 h-4" />
+                            {cat.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
 
                     {/* Weekday Selector */}
                     <div className="flex flex-wrap gap-1">
