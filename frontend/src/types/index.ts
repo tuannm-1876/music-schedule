@@ -26,6 +26,7 @@ export interface Schedule {
   is_active: boolean;
   one_time: boolean;
   song_category: ScheduleSongCategory;
+  volume: number;
   monday: boolean;
   tuesday: boolean;
   wednesday: boolean;

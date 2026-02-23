@@ -2,10 +2,9 @@
 import eventlet
 eventlet.monkey_patch()
 
-from flask import Flask, render_template, jsonify, request, redirect, url_for, send_file, session, flash, send_from_directory
+from flask import Flask, render_template, jsonify, request, redirect, url_for, send_file, session, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, emit
-from flask_cors import CORS
 from flask_wtf.csrf import CSRFProtect
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
@@ -20,6 +19,7 @@ import sys
 import logging
 import shutil
 import re
+import secrets
 from werkzeug.utils import secure_filename
 import mutagen
 from mutagen.mp3 import MP3
@@ -37,11 +37,11 @@ logger = logging.getLogger(__name__)
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 # Constants
-ALLOWED_EXTENSIONS = {'mp3', 'wav', 'ogg'}
+ALLOWED_EXTENSIONS = {'mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'}
 DEFAULT_VOLUME = 0.5
 BROADCAST_INTERVAL = 0.5
 UPDATE_YTDLP_HOUR = 1
-MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_UPLOAD_SIZE = 150 * 1024 * 1024  # 150MB
 
 # Global download state
 download_state = {
@@ -64,9 +64,11 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SESSION_TYPE'] = 'filesystem'
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours session lifetime
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_SIZE
-app.config['CORS_HEADERS'] = 'Content-Type'
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = False
+app.config['REMEMBER_COOKIE_DURATION'] = 365 * 24 * 3600  # 1 year
+
 socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins='*', message_queue=None)
-CORS(app)
 db = SQLAlchemy(app)
 
 # Get absolute path for the project directory
@@ -366,6 +368,7 @@ class Schedule(db.Model):
     enabled = db.Column(db.Boolean, default=True)
     one_time = db.Column(db.Boolean, default=False)  # If True, disable after playing once
     song_category = db.Column(db.String(20), default='music')  # 'music', 'announcement', or 'all'
+    volume = db.Column(db.Integer, default=100)  # Volume level (0-100)
     monday = db.Column(db.Boolean, default=True)
     tuesday = db.Column(db.Boolean, default=True)
     wednesday = db.Column(db.Boolean, default=True)
@@ -403,18 +406,48 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(200), nullable=False)
+    remember_token = db.Column(db.String(100), unique=True, nullable=True)
     
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
         
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
+    
+    def generate_remember_token(self):
+        self.remember_token = secrets.token_urlsafe(64)
+        return self.remember_token
 
 # Create a function to check if a user is logged in
+def get_authenticated_user():
+    """Check authentication via session cookie, with remember_token fallback.
+    Returns (user_id, username) or (None, None)."""
+    # Check session first
+    if 'user_id' in session:
+        return session['user_id'], session.get('username', '')
+    
+    # Check remember_token cookie for persistent login
+    remember_token = request.cookies.get('remember_token')
+    if remember_token:
+        try:
+            with session_scope() as db_session:
+                user = db_session.query(User).filter_by(remember_token=remember_token).first()
+                if user:
+                    # Restore session from remember token
+                    session['user_id'] = user.id
+                    session['username'] = user.username
+                    session.permanent = True
+                    return user.id, user.username
+        except Exception as e:
+            logger.error(f"[Auth] Error checking remember_token: {e}")
+    
+    return None, None
+
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
+        user_id, _ = get_authenticated_user()
+        if user_id is None:
             return redirect(url_for('login', next=request.url))
         return f(*args, **kwargs)
     return decorated_function
@@ -423,10 +456,10 @@ def login_required(f):
 def socketio_login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            emit('error', {'message': 'Unauthorized. Please login.'})
-            return
-        return f(*args, **kwargs)
+        if 'user_id' in session:
+            return f(*args, **kwargs)
+        emit('error', {'message': 'Unauthorized. Please login.'})
+        return
     return decorated_function
 
 def allowed_file(filename):
@@ -665,9 +698,10 @@ def schedule_music():
                             now = datetime.now()
                             schedule_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
                             
-                            # Pass schedule_id, one_time flag, and song_category to the job
+                            # Pass schedule_id, one_time flag, song_category, and volume to the job
                             song_category = schedule.song_category or 'music'
-                            job_args = [schedule.id, schedule.one_time, song_category]
+                            volume = schedule.volume if schedule.volume is not None else 100
+                            job_args = [schedule.id, schedule.one_time, song_category, volume]
                             
                             if schedule_time > now:
                                 scheduler.add_job(
@@ -724,9 +758,9 @@ def schedule_music():
                 logger.error(f"Failed to restore broadcast job: {e}")
             return False
 
-def play_next_song(schedule_id=None, one_time=False, song_category='music'):
+def play_next_song(schedule_id=None, one_time=False, song_category='music', volume=100):
     with app.app_context():
-        logger.info(f"Scheduler triggered play next song (schedule_id={schedule_id}, one_time={one_time}, shuffle={shuffle_mode}, category={song_category})")
+        logger.info(f"Scheduler triggered play next song (schedule_id={schedule_id}, one_time={one_time}, shuffle={shuffle_mode}, category={song_category}, volume={volume})")
         try:
             with session_scope() as session:
                 # Build base query with category filter
@@ -750,12 +784,15 @@ def play_next_song(schedule_id=None, one_time=False, song_category='music'):
 
                 if next_song:
                     logger.info(f"Playing song: {next_song.title} (category: {next_song.category})")
+                    # Set volume before playing
+                    apply_volume(volume)
                     # Trigger playlist update through socket
                     socketio.emit('schedule_triggered', {
                         'song_id': next_song.id,
                         'title': next_song.title,
                         'time': datetime.now().strftime("%H:%M"),
-                        'category': next_song.category
+                        'category': next_song.category,
+                        'volume': volume
                     })
                     play_music(next_song.id)
                     
@@ -1122,9 +1159,9 @@ def download_music(url):
 def api_initial_state():
     """API endpoint to get all initial state for React frontend"""
     try:
-        # Check authentication
-        is_authenticated = 'user_id' in session
-        username = session.get('username', '')
+        # Check authentication via session or token
+        user_id, username = get_authenticated_user()
+        is_authenticated = user_id is not None
         
         if not is_authenticated:
             return jsonify({
@@ -1181,6 +1218,7 @@ def api_initial_state():
                 'is_active': s.enabled,
                 'one_time': s.one_time,
                 'song_category': s.song_category or 'music',
+                'volume': s.volume if s.volume is not None else 100,
                 'monday': s.monday,
                 'tuesday': s.tuesday,
                 'wednesday': s.wednesday,
@@ -1269,55 +1307,107 @@ def api_initial_state():
 def api_login():
     """API login endpoint for React frontend"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
+
+        if data is None:
+            # Fallback: try form data
+            data = request.form.to_dict()
+
+        if not data:
+            logger.warning("Login failed: empty request body")
+            return jsonify({'error': 'Không nhận được dữ liệu'}), 400
+
         username = data.get('username')
         password = data.get('password')
+
+        logger.info(f"Login attempt for username: '{username}'")
         
         if not username or not password:
+            logger.warning("Login failed: missing username or password")
             return jsonify({'error': 'Vui lòng nhập tên đăng nhập và mật khẩu'}), 400
         
         with session_scope() as db_session:
             user = db_session.query(User).filter_by(username=username).first()
             
-            if user and user.check_password(password):
+            if user is None:
+                logger.warning(f"Login failed: user '{username}' not found")
+                return jsonify({'error': 'Sai tên đăng nhập hoặc mật khẩu'}), 401
+
+            if user.check_password(password):
                 session['user_id'] = user.id
                 session['username'] = user.username
-                return jsonify({'success': True, 'username': user.username})
+                session.permanent = True
+                
+                # Generate remember_token for persistent login
+                remember_token = user.generate_remember_token()
+                
+                logger.info(f"Login success for user: '{username}'")
+                response = jsonify({'success': True, 'username': user.username})
+                # Set remember_token cookie (1 year)
+                response.set_cookie(
+                    'remember_token', 
+                    remember_token,
+                    max_age=365 * 24 * 3600,
+                    httponly=True,
+                    samesite='Lax'
+                )
+                return response
             else:
+                logger.warning(f"Login failed: wrong password for user '{username}'")
                 return jsonify({'error': 'Sai tên đăng nhập hoặc mật khẩu'}), 401
                 
     except Exception as e:
-        logger.error(f"Login error: {e}")
+        logger.error(f"Login error: {e}", exc_info=True)
         return jsonify({'error': 'Lỗi đăng nhập'}), 500
 
 @app.route('/api/logout')
 def api_logout():
     """API logout endpoint"""
+    # Clear remember_token from DB
+    remember_token = request.cookies.get('remember_token')
+    if remember_token:
+        try:
+            with session_scope() as db_session:
+                user = db_session.query(User).filter_by(remember_token=remember_token).first()
+                if user:
+                    user.remember_token = None
+        except Exception as e:
+            logger.error(f"Error clearing remember_token: {e}")
+    
     session.clear()
-    return jsonify({'success': True})
+    response = jsonify({'success': True})
+    response.delete_cookie('remember_token')
+    return response
 
 # =============================================================================
 # Original Routes
 # =============================================================================
 
 @app.route('/')
-@login_required
+# @login_required
 def index():
     # Serve React frontend
     return send_from_directory('static/react', 'index.html')
 
-@app.route('/set-volume/<value>')
-@login_required
-def set_volume(value):
+def apply_volume(value):
     global volume
     try:
         percent_value = int(float(value))
         percent_value = max(0, min(100, percent_value))
         volume = percent_value / 100.0
         pygame.mixer.music.set_volume(volume)
-        return jsonify({'success': True, 'volume': volume})
+        return True, volume
     except (ValueError, TypeError) as e:
         logger.error(f"Invalid volume value: {value}")
+        return False, str(e)
+
+@app.route('/set-volume/<value>')
+@login_required
+def set_volume(value):
+    success, result = apply_volume(value)
+    if success:
+        return jsonify({'success': True, 'volume': result})
+    else:
         return jsonify({
             'success': False,
             'error': 'Invalid volume value. Must be between 0 and 100.'
@@ -1333,11 +1423,13 @@ def add_schedule():
         time = data.get('time')
         one_time = data.get('one_time', False)
         song_category = data.get('song_category', 'music')
+        volume = data.get('volume', 100)
         weekdays_selected = [day for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] if data.get(day)]
     else:
         time = request.form.get('time')
         one_time = request.form.get('one_time') == 'true'
         song_category = request.form.get('song_category', 'music')
+        volume = int(request.form.get('volume', 100))
         weekdays_selected = request.form.getlist('weekdays')
     
     if not time:
@@ -1346,6 +1438,14 @@ def add_schedule():
     # Validate song_category
     if song_category not in ['music', 'announcement', 'all']:
         song_category = 'music'
+    
+    # Validate volume
+    try:
+        volume = int(volume)
+        if volume < 0 or volume > 100:
+            volume = 100
+    except (ValueError, TypeError):
+        volume = 100
 
     try:
         datetime.strptime(time, '%H:%M')
@@ -1354,6 +1454,7 @@ def add_schedule():
             schedule = Schedule(time=time)
             schedule.one_time = one_time
             schedule.song_category = song_category
+            schedule.volume = volume
             schedule.monday = 'monday' in weekdays_selected
             schedule.tuesday = 'tuesday' in weekdays_selected
             schedule.wednesday = 'wednesday' in weekdays_selected
@@ -1371,6 +1472,7 @@ def add_schedule():
                 'is_active': schedule.enabled,
                 'one_time': schedule.one_time,
                 'song_category': schedule.song_category,
+                'volume': schedule.volume,
                 'monday': schedule.monday,
                 'tuesday': schedule.tuesday,
                 'wednesday': schedule.wednesday,
@@ -1661,9 +1763,11 @@ def handle_toggle_play_pause():
 def handle_stop():
     global current_song_id, current_song_duration, is_playing, current_position
     try:
-        if pygame.mixer.music.get_busy():
-            # Use fade out if enabled
-            if fade_enabled:
+        # get_busy() returns False when paused, so also check is_playing / current_song_id
+        music_active = pygame.mixer.music.get_busy() or is_playing or current_song_id is not None
+        if music_active:
+            # Use fade out if enabled and actually playing (not paused)
+            if fade_enabled and pygame.mixer.music.get_busy():
                 fade_out()
             else:
                 pygame.mixer.music.stop()
@@ -2051,7 +2155,12 @@ def handle_sort_unplayed_first():
                         'source': song.source,
                         'duration': song.duration,
                         'position': song.position,
+                        'category': song.category or 'music',
+                        'delete_after_play': song.delete_after_play or False,
                         'last_played_at': song.last_played_at.isoformat() if song.last_played_at else None,
+                        'priority': song.priority,
+                        'created_at': song.created_at.isoformat() if song.created_at else None,
+                        'file_path': song.filename,
                         'duration_formatted': f"{song.duration//60}:{song.duration%60:02d}"
                     })
                 
@@ -2169,9 +2278,8 @@ def serve_react(path=''):
     return send_file(os.path.join(REACT_BUILD_DIR, 'index.html'))
 
 @app.route('/assets/<path:filename>')
-@login_required
 def serve_react_assets(filename):
-    """Serve React static assets"""
+    """Serve React static assets (no login required for CSS/JS files)"""
     return send_file(os.path.join(REACT_BUILD_DIR, 'assets', filename))
 
 # =============================================================================

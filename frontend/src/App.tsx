@@ -13,9 +13,10 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState('');
-  const { setSongs, setSchedules, setPlaybackState, setNextSchedule, setSettings } = useSocket();
+  const { setSongs, setSchedules, setPlaybackState, setNextSchedule, setSettings, reconnectSocket } = useSocket();
   const { addToast } = useToast();
 
+  // Load initial state on mount
   useEffect(() => {
     const loadInitialState = async () => {
       try {
@@ -57,6 +58,9 @@ function App() {
       await authApi.login(loginUsername, password);
       setIsAuthenticated(true);
       setUsername(loginUsername);
+      
+      // Reconnect socket with session
+      reconnectSocket();
       
       // Load initial state after login
       const response = await authApi.getInitialState();

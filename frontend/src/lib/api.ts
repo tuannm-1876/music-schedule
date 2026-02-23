@@ -1,22 +1,11 @@
 import axios from 'axios';
 
 const api = axios.create({
-  baseURL: '',
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
 });
-
-// Request interceptor
-api.interceptors.request.use(
-  (config) => {
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
-  }
-);
 
 // Response interceptor
 api.interceptors.response.use(
@@ -64,6 +53,7 @@ export const scheduleApi = {
     time: string;
     one_time?: boolean;
     song_category?: 'music' | 'announcement' | 'all';
+    volume?: number;
     monday: boolean;
     tuesday: boolean;
     wednesday: boolean;

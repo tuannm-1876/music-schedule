@@ -68,16 +68,16 @@ export function Player() {
       className="fixed bottom-0 left-0 right-0 z-40"
     >
       <div className="glass border-t border-border shadow-2xl">
-        <div className="max-w-7xl mx-auto px-4 py-3">
-          <div className="flex items-center gap-4">
+        <div className="max-w-7xl mx-auto px-3 py-2 md:px-4 md:py-3">
+          <div className="grid grid-cols-[1fr_auto] md:flex md:flex-row items-center gap-y-2 md:gap-y-0 gap-x-2 md:gap-x-4">
             {/* Album Art / Now Playing */}
-            <div className="flex items-center gap-3 min-w-0 flex-1">
+            <div className="flex items-center gap-2 md:gap-3 min-w-0 col-span-1 md:flex-1 md:order-1">
               <motion.div
                 animate={{ rotate: is_playing ? 360 : 0 }}
                 transition={{ duration: 3, repeat: is_playing ? Infinity : 0, ease: 'linear' }}
-                className="relative w-12 h-12 rounded-full bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center shrink-0 shadow-lg"
+                className="relative w-10 h-10 md:w-12 md:h-12 rounded-full bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center shrink-0 shadow-lg"
               >
-                <Music className="w-6 h-6 text-white" />
+                <Music className="w-5 h-5 md:w-6 md:h-6 text-white" />
                 {is_playing && (
                   <motion.div
                     className="absolute inset-0 rounded-full border-2 border-primary"
@@ -94,7 +94,7 @@ export function Player() {
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -10 }}
-                    className="font-medium text-sm truncate"
+                    className="font-medium text-sm md:text-base truncate"
                   >
                     {current_song_title || 'Chưa có bài hát'}
                   </motion.p>
@@ -107,89 +107,8 @@ export function Player() {
               </div>
             </div>
 
-            {/* Playback Controls */}
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={togglePlayPause}
-                className="h-12 w-12 rounded-full hover:bg-primary/10"
-                disabled={!current_song_title && !playbackState.current_song_id && !is_playing}
-              >
-                <AnimatePresence mode="wait">
-                  {is_playing ? (
-                    <motion.div
-                      key="pause"
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      exit={{ scale: 0 }}
-                    >
-                      <Pause className="w-6 h-6" />
-                    </motion.div>
-                  ) : (
-                    <motion.div
-                      key="play"
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      exit={{ scale: 0 }}
-                    >
-                      <Play className="w-6 h-6 ml-0.5" />
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </Button>
-              
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={stopMusic}
-                className="h-10 w-10 rounded-full hover:bg-destructive/10 hover:text-destructive"
-                disabled={!is_playing && !current_song_title}
-              >
-                <Square className="w-4 h-4" />
-              </Button>
-            </div>
-
-            {/* Progress Bar */}
-            <div
-              className="flex-1 max-w-md cursor-pointer group"
-              onClick={handleSeek}
-            >
-              <div className="relative h-2 bg-muted rounded-full overflow-hidden">
-                <motion.div
-                  className="absolute h-full bg-gradient-to-r from-primary to-purple-500"
-                  style={{ width: `${progress}%` }}
-                  transition={{ type: 'tween', duration: 0.1 }}
-                />
-                <div className="absolute h-full w-full bg-transparent group-hover:bg-white/5 transition-colors" />
-              </div>
-            </div>
-
-            {/* Volume Control */}
-            <div className="flex items-center gap-2 w-32">
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={toggleMute}
-                className="h-8 w-8 shrink-0"
-              >
-                {isMuted || localVolume === 0 ? (
-                  <VolumeX className="w-4 h-4" />
-                ) : (
-                  <Volume2 className="w-4 h-4" />
-                )}
-              </Button>
-              <Slider
-                value={localVolume}
-                min={0}
-                max={100}
-                onValueChange={handleVolumeChange}
-                className="flex-1"
-              />
-            </div>
-
             {/* Shuffle & Settings */}
-            <div className="flex items-center gap-1 relative" ref={settingsRef}>
+            <div className="flex items-center gap-1 relative col-span-1 justify-end md:order-5" ref={settingsRef}>
               {/* Shuffle Toggle */}
               <Button
                 variant="ghost"
@@ -311,6 +230,87 @@ export function Player() {
                   </motion.div>
                 )}
               </AnimatePresence>
+            </div>
+
+            {/* Progress Bar */}
+            <div
+              className="col-span-2 w-full md:flex-1 md:max-w-md cursor-pointer group py-1.5 md:py-0 md:order-3"
+              onClick={handleSeek}
+            >
+              <div className="relative h-1.5 md:h-2 bg-muted rounded-full overflow-hidden">
+                <motion.div
+                  className="absolute h-full bg-gradient-to-r from-primary to-purple-500"
+                  style={{ width: `${progress}%` }}
+                  transition={{ type: 'tween', duration: 0.1 }}
+                />
+                <div className="absolute h-full w-full bg-transparent group-hover:bg-white/5 transition-colors" />
+              </div>
+            </div>
+
+            {/* Playback Controls */}
+            <div className="flex items-center gap-2 col-span-1 justify-start md:justify-center md:order-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={togglePlayPause}
+                className="h-10 w-10 md:h-12 md:w-12 rounded-full hover:bg-primary/10"
+                disabled={!current_song_title && !playbackState.current_song_id && !is_playing}
+              >
+                <AnimatePresence mode="wait">
+                  {is_playing ? (
+                    <motion.div
+                      key="pause"
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      exit={{ scale: 0 }}
+                    >
+                      <Pause className="w-5 h-5 md:w-6 md:h-6" />
+                    </motion.div>
+                  ) : (
+                    <motion.div
+                      key="play"
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      exit={{ scale: 0 }}
+                    >
+                      <Play className="w-5 h-5 md:w-6 md:h-6 ml-0.5" />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </Button>
+              
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={stopMusic}
+                className="h-8 w-8 md:h-10 md:w-10 rounded-full hover:bg-destructive/10 hover:text-destructive"
+                disabled={!is_playing && !current_song_title}
+              >
+                <Square className="w-4 h-4" />
+              </Button>
+            </div>
+
+            {/* Volume Control */}
+            <div className="flex items-center gap-2 col-span-1 justify-end w-full md:w-32 md:order-4">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={toggleMute}
+                className="h-8 w-8 shrink-0"
+              >
+                {isMuted || localVolume === 0 ? (
+                  <VolumeX className="w-4 h-4" />
+                ) : (
+                  <Volume2 className="w-4 h-4" />
+                )}
+              </Button>
+              <Slider
+                value={localVolume}
+                min={0}
+                max={100}
+                onValueChange={handleVolumeChange}
+                className="flex-1 max-w-[80px] md:max-w-none"
+              />
             </div>
           </div>
         </div>

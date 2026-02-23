@@ -11,11 +11,12 @@ import {
   Zap,
   Music,
   Megaphone,
-  ListMusic
+  ListMusic,
+  Volume2
 } from 'lucide-react';
 import { useSocket } from '@/contexts/SocketContext';
 import { useToast } from '@/contexts/ToastContext';
-import { Button, Card, Input, Switch } from '@/components/ui';
+import { Button, Card, Input, Switch, Slider } from '@/components/ui';
 import { scheduleApi } from '@/lib/api';
 import { getWeekdayLabel, WEEKDAYS } from '@/lib/utils';
 import type { Schedule, ScheduleSongCategory } from '@/types';
@@ -33,6 +34,7 @@ export function ScheduleManager() {
   const [time, setTime] = useState('08:00');
   const [oneTime, setOneTime] = useState(false);
   const [songCategory, setSongCategory] = useState<ScheduleSongCategory>('music');
+  const [volume, setVolume] = useState(100);
   const [selectedDays, setSelectedDays] = useState<Record<string, boolean>>({
     monday: true,
     tuesday: true,
@@ -68,6 +70,7 @@ export function ScheduleManager() {
         time,
         one_time: oneTime,
         song_category: songCategory,
+        volume,
         monday: selectedDays.monday,
         tuesday: selectedDays.tuesday,
         wednesday: selectedDays.wednesday,
@@ -85,6 +88,7 @@ export function ScheduleManager() {
       setTime('08:00');
       setOneTime(false);
       setSongCategory('music');
+      setVolume(100);
       setSelectedDays({
         monday: true,
         tuesday: true,
@@ -204,6 +208,10 @@ export function ScheduleManager() {
                           <catConfig.icon className="w-3 h-3" />
                           {catConfig.label}
                         </span>
+                        <span className="px-2 py-0.5 text-xs rounded-full bg-muted flex items-center gap-1 text-muted-foreground">
+                          <Volume2 className="w-3 h-3" />
+                          {schedule.volume || 100}%
+                        </span>
                       </div>
                     </div>
 
@@ -310,6 +318,25 @@ export function ScheduleManager() {
                           </button>
                         ))}
                       </div>
+                    </div>
+
+                    {/* Volume Control */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm font-medium flex items-center gap-2">
+                          <Volume2 className="w-4 h-4" />
+                          Âm lượng:
+                        </label>
+                        <span className="text-sm font-semibold text-primary">{volume}%</span>
+                      </div>
+                      <Slider
+                        value={volume}
+                        onValueChange={(val) => setVolume(val)}
+                        min={0}
+                        max={100}
+                        step={5}
+                        className="w-full"
+                      />
                     </div>
 
                     {/* Weekday Selector */}

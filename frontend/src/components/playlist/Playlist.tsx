@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { motion, AnimatePresence, Reorder } from 'framer-motion';
+import { motion, AnimatePresence, Reorder, useDragControls } from 'framer-motion';
 import { 
   Music, 
   Play, 
@@ -195,26 +195,19 @@ export function Playlist() {
           >
             <AnimatePresence>
               {filteredSongs.map((song, index) => (
-                <Reorder.Item
+                <SongItem
                   key={song.id}
-                  value={song}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, x: -100 }}
-                  transition={{ delay: index * 0.05 }}
-                >
-                  <SongItem
-                    song={song}
-                    isPlaying={playbackState.current_song_id === song.id}
-                    isCurrentlyLoading={playingId === song.id}
-                    isDeleting={deletingId === song.id}
-                    onPlay={() => handlePlay(song.id)}
-                    onDelete={() => handleDelete(song.id)}
-                    onCategoryChange={(cat) => handleCategoryChange(song.id, cat)}
-                    onToggleDeleteAfterPlay={() => handleToggleDeleteAfterPlay(song.id)}
-                    getSourceIcon={getSourceIcon}
-                  />
-                </Reorder.Item>
+                  song={song}
+                  isPlaying={playbackState.current_song_id === song.id}
+                  isCurrentlyLoading={playingId === song.id}
+                  isDeleting={deletingId === song.id}
+                  onPlay={() => handlePlay(song.id)}
+                  onDelete={() => handleDelete(song.id)}
+                  onCategoryChange={(cat) => handleCategoryChange(song.id, cat)}
+                  onToggleDeleteAfterPlay={() => handleToggleDeleteAfterPlay(song.id)}
+                  getSourceIcon={getSourceIcon}
+                  index={index}
+                />
               ))}
             </AnimatePresence>
           </Reorder.Group>
@@ -234,6 +227,7 @@ interface SongItemProps {
   onCategoryChange: (category: SongCategory) => void;
   onToggleDeleteAfterPlay: () => void;
   getSourceIcon: (source: string) => React.ReactNode;
+  index: number;
 }
 
 function SongItem({
@@ -246,9 +240,11 @@ function SongItem({
   onCategoryChange,
   onToggleDeleteAfterPlay,
   getSourceIcon,
+  index,
 }: SongItemProps) {
   const [showActions, setShowActions] = useState(false);
   const [showCategoryMenu, setShowCategoryMenu] = useState(false);
+  const dragControls = useDragControls();
 
   const categoryConfig = {
     music: { label: 'Nhạc', color: 'bg-blue-500/20 text-blue-600 dark:text-blue-400', icon: Music },
@@ -259,22 +255,34 @@ function SongItem({
   const config = categoryConfig[currentCategory];
 
   return (
-    <motion.div
-      className={`group relative flex items-center gap-3 px-4 py-3 transition-colors ${
-        isPlaying
-          ? 'bg-primary/10'
-          : 'hover:bg-muted/50'
-      }`}
-      onMouseEnter={() => setShowActions(true)}
-      onMouseLeave={() => setShowActions(false)}
+    <Reorder.Item
+      value={song}
+      dragListener={false}
+      dragControls={dragControls}
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, x: -100 }}
+      transition={{ delay: index * 0.05 }}
     >
-      {/* Drag Handle */}
-      <div className="cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground transition-colors">
-        <GripVertical className="w-4 h-4" />
-      </div>
+      <motion.div
+        className={`group relative flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-3 transition-colors ${
+          isPlaying
+            ? 'bg-primary/10'
+            : 'hover:bg-muted/50'
+        }`}
+        onMouseEnter={() => setShowActions(true)}
+        onMouseLeave={() => setShowActions(false)}
+      >
+        {/* Drag Handle - Only this triggers drag */}
+        <div 
+          className="cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground transition-colors touch-none select-none p-2 -m-2 shrink-0"
+          onPointerDown={(e) => dragControls.start(e)}
+        >
+          <GripVertical className="w-5 h-5" />
+        </div>
 
       {/* Playing Indicator / Play Button */}
-      <div className="relative w-10 h-10 shrink-0">
+      <div className="relative w-9 h-9 sm:w-10 sm:h-10 shrink-0">
         {isPlaying ? (
           <div className="w-full h-full rounded-lg bg-primary flex items-center justify-center">
             <motion.div
@@ -317,34 +325,34 @@ function SongItem({
       </div>
 
       {/* Song Info */}
-      <div className="flex-1 min-w-0">
-        <p className={`font-medium truncate ${isPlaying ? 'text-primary' : ''}`}>
+      <div className="flex-1 min-w-0 overflow-hidden">
+        <p className={`font-medium truncate text-sm sm:text-base ${isPlaying ? 'text-primary' : ''}`}>
           {song.title}
         </p>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
-          <span className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5 sm:gap-2 text-xs text-muted-foreground mt-0.5 flex-wrap">
+          <span className="flex items-center gap-1 shrink-0">
             {getSourceIcon(song.source)}
-            {song.source}
+            <span className="hidden sm:inline">{song.source}</span>
           </span>
-          <span>•</span>
-          <span>{formatDuration(song.duration)}</span>
+          <span className="hidden sm:inline">•</span>
+          <span className="shrink-0">{formatDuration(song.duration)}</span>
           {song.last_played_at && (
             <>
-              <span>•</span>
-              <span className="text-green-600 dark:text-green-400">Đã phát</span>
+              <span className="hidden sm:inline">•</span>
+              <span className="text-green-600 dark:text-green-400 shrink-0">Đã phát</span>
             </>
           )}
         </div>
       </div>
 
       {/* Category Badge with Dropdown */}
-      <div className="relative">
+      <div className="relative shrink-0">
         <button
           onClick={() => setShowCategoryMenu(!showCategoryMenu)}
-          className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${config.color}`}
+          className={`flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-md text-xs font-medium transition-colors ${config.color}`}
         >
           <config.icon className="w-3 h-3" />
-          {config.label}
+          <span className="hidden sm:inline">{config.label}</span>
           <ChevronDown className="w-3 h-3" />
         </button>
 
@@ -387,57 +395,59 @@ function SongItem({
         </AnimatePresence>
       </div>
 
-      {/* Delete After Play Badge */}
+      {/* Delete After Play Badge - Hidden on mobile, show icon only */}
       {song.delete_after_play && (
-        <div className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-red-500/20 text-red-600 dark:text-red-400">
+        <div className="flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-md text-xs font-medium bg-red-500/20 text-red-600 dark:text-red-400 shrink-0">
           <Trash className="w-3 h-3" />
-          Xóa sau phát
+          <span className="hidden sm:inline">Xóa sau phát</span>
         </div>
       )}
 
-      {/* Actions */}
-      <AnimatePresence>
-        {(showActions || isDeleting) && (
-          <motion.div
-            initial={{ opacity: 0, x: 10 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 10 }}
-            className="flex items-center gap-1"
-          >
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onToggleDeleteAfterPlay}
-              title={song.delete_after_play ? 'Tắt xóa sau khi phát' : 'Xóa sau khi phát'}
-              className={`h-8 w-8 ${
-                song.delete_after_play 
-                  ? 'text-red-500 hover:text-red-600 hover:bg-red-500/10' 
-                  : 'text-muted-foreground hover:text-red-500 hover:bg-red-500/10'
-              }`}
+      {/* Actions - Always visible on mobile */}
+      <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+        <AnimatePresence>
+          {(showActions || isDeleting || true) && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex items-center gap-0.5 sm:gap-1"
             >
-              <Trash className="w-4 h-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onDelete}
-              disabled={isDeleting}
-              className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-            >
-              {isDeleting ? (
-                <motion.div
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
-                >
-                  <Clock className="w-4 h-4" />
-                </motion.div>
-              ) : (
-                <Trash2 className="w-4 h-4" />
-              )}
-            </Button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onToggleDeleteAfterPlay}
+                title={song.delete_after_play ? 'Tắt xóa sau khi phát' : 'Xóa sau khi phát'}
+                className={`h-7 w-7 sm:h-8 sm:w-8 ${
+                  song.delete_after_play 
+                    ? 'text-red-500 hover:text-red-600 hover:bg-red-500/10' 
+                    : 'text-muted-foreground hover:text-red-500 hover:bg-red-500/10'
+                }`}
+              >
+                <Trash className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onDelete}
+                disabled={isDeleting}
+                className="h-7 w-7 sm:h-8 sm:w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+              >
+                {isDeleting ? (
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+                  >
+                    <Clock className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                  </motion.div>
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                )}
+              </Button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+      </motion.div>
+    </Reorder.Item>
   );
 }

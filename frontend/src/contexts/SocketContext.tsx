@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type { PlaybackState, DownloadState, Song, Schedule, PlaybackSettings } from '@/types';
 
@@ -23,6 +23,7 @@ interface SocketContextType {
   toggleShuffle: () => void;
   toggleFade: () => void;
   setFadeDuration: (duration: number) => void;
+  reconnectSocket: () => void;
 }
 
 const defaultPlaybackState: PlaybackState = {
@@ -59,21 +60,25 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [nextSchedule, setNextSchedule] = useState<{ time: string; song_title: string } | null>(null);
   const [settings, setSettings] = useState<PlaybackSettings>(defaultSettings);
+  const [socketVersion, setSocketVersion] = useState(0);
 
-  useEffect(() => {
-    const socketInstance = io({
+  const connectSocket = useCallback(() => {
+    const socketInstance = io('/', {
       transports: ['websocket', 'polling'],
-      reconnectionAttempts: 5,
+      reconnectionAttempts: 10,
       reconnectionDelay: 1000,
+      withCredentials: true,
     });
 
     socketInstance.on('connect', () => {
-      console.log('Socket connected');
       setIsConnected(true);
     });
 
-    socketInstance.on('disconnect', () => {
-      console.log('Socket disconnected');
+    socketInstance.on('connect_error', (err) => {
+      console.error('[Socket] Connection error:', err.message, err);
+    });
+
+    socketInstance.on('disconnect', (_reason) => {
       setIsConnected(false);
     });
 
@@ -95,7 +100,10 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       setPlaybackState((prev) => ({
         ...prev,
         is_playing: false,
+        current_song_id: null,
+        current_song_title: null,
         position: 0,
+        duration: 0,
       }));
     });
 
@@ -139,8 +147,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     });
 
     // Schedule triggered
-    socketInstance.on('schedule_triggered', (data: { message: string; song: string }) => {
-      console.log('Schedule triggered:', data);
+    socketInstance.on('schedule_triggered', (_data: { message: string; song: string }) => {
     });
 
     // Schedule updated (e.g., one-time schedule disabled)
@@ -172,7 +179,20 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     return () => {
       socketInstance.disconnect();
     };
-  }, []);
+  }, [socketVersion]);
+
+  const reconnectSocket = useCallback(() => {
+    // Disconnect existing socket, bump version to trigger reconnect
+    if (socket) {
+      socket.disconnect();
+    }
+    setSocketVersion((v) => v + 1);
+  }, [socket]);
+
+  useEffect(() => {
+    const cleanup = connectSocket();
+    return cleanup;
+  }, [connectSocket]);
 
   const togglePlayPause = () => {
     socket?.emit('toggle_play_pause');
@@ -225,6 +245,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
         toggleShuffle,
         toggleFade,
         setFadeDuration: setFadeDurationFn,
+        reconnectSocket,
       }}
     >
       {children}
