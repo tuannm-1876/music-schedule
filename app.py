@@ -57,15 +57,15 @@ download_state = {
 
 app = Flask(__name__)
 csrf = CSRFProtect(app)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///music.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///music.db' 
 app.config['UPLOAD_FOLDER'] = 'music'
-app.config['SECRET_KEY'] = 'super-secret-key-for-music-scheduler-app'
+app.config['SECRET_KEY'] = 'super-secret-key-for-music-scheduler-app' # In production, use a secure random key and keep it secret!
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SESSION_TYPE'] = 'filesystem'
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours session lifetime
-app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_SIZE
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['SESSION_COOKIE_SECURE'] = False
+app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_SIZE # Limit upload size to prevent abuse
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax' # Adjust as needed for your frontend setup (e.g., 'None' for cross-origin)
+app.config['SESSION_COOKIE_SECURE'] = False # Set to True if using HTTPS
 app.config['REMEMBER_COOKIE_DURATION'] = 365 * 24 * 3600  # 1 year
 
 socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins='*', message_queue=None)
