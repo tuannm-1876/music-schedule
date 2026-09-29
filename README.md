@@ -1,74 +1,166 @@
-# Raspberry Pi Music Scheduler
+# Music Scheduler
 
-A web-based music scheduler for Raspberry Pi that plays music at scheduled times. Features YouTube/YouTube Music playlist downloads, drag-and-drop playlist management, and real-time progress tracking.
+A web application for scheduling and playing music automatically on a Raspberry Pi. Supports downloading from YouTube, drag-and-drop playlist management, cron-like scheduling, and remote control via an Android app.
 
-## Key Features
+## Features
 
-- **YouTube Playlist Support**: Download individual tracks or entire playlists
-- **Real-time Download Progress**: Live progress tracking with persistent state
-- **Drag-and-drop Playlist**: Intuitive song reordering
-- **Scheduled Playback**: Custom times with weekday selection
-- **Secure Login**: Random password generation and user authentication
-- **System Monitoring**: Disk usage and download status
-- **Local File Upload**: Support for .mp3, .wav, .ogg files
+- **YouTube downloads** — single videos or entire playlists with real-time progress tracking
+- **File uploads** — MP3, WAV, OGG, FLAC, AAC, M4A (up to 150MB)
+- **Drag-and-drop playlist** — reorder songs, categorize as music or announcement
+- **Scheduled playback** — set time + weekdays, supports one-time schedules
+- **Playback controls** — play/pause, stop, seek, volume, shuffle, fade in/out
+- **Android app** — remote control via Tailscale VPN (Capacitor WebView)
+- **Persistent login** — remember token keeps sessions alive for 1 year
+- **Auto-update yt-dlp** — daily update at 1:00 AM
 
-## Quick Setup
+## Requirements
 
-**Requirements**: Raspberry Pi, Python 3.7+, FFmpeg, Internet connection
+- Raspberry Pi (or any Linux machine)
+- Python 3.7+
+- FFmpeg
+- pygame (for audio output)
+
+## Installation
 
 ```bash
-# Install dependencies
-sudo apt-get update && sudo apt-get install python3-pip python3-pygame ffmpeg
+# Install system dependencies
+sudo apt-get update
+sudo apt-get install python3-pip python3-pygame ffmpeg
 
-# Clone and setup
-git clone [repository-url] && cd schedule-music
-sudo pip3 install -r requirements.txt
+# Clone the repo
+git clone https://github.com/tuannm-1876/music-schedule.git
+cd music-schedule
 
-# Setup database (save the generated admin password!)
-python3 migrate_song_position.py
-python3 migrate_user.py
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install Python packages
+pip install -r requirements.txt
+
+# Run migrations
+python3 migrate_user.py              # Create admin user (save the password!)
+python3 migrate_song_position.py     # Add position field to Song
+python3 migrate_category.py          # Add category field
+python3 migrate_delete_after_play.py # Add delete_after_play field
+python3 migrate_one_time.py          # Add one_time field to Schedule
+python3 migrate_schedule_volume.py   # Add volume field to Schedule
+python3 migrate_remember_token.py    # Add remember_token field to User
 ```
 
 ## Usage
 
+### Development
+
 ```bash
-# Start application
-python3 app.py  # Development
-# OR
-gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:5000 wsgi:application  # Production
+python3 app.py
 ```
 
-1. **Access**: `http://[raspberry-pi-ip]:5000`
-2. **Login**: Username `admin` + generated password
-3. **Add Music**:
-   - YouTube URLs (single/playlist) → Watch real-time progress
-   - Upload local files (.mp3, .wav, .ogg)
-4. **Manage**: Drag-and-drop to reorder, play/delete songs
-5. **Schedule**: Set times + weekdays for automatic playback
-6. **Control**: Play/pause, volume, seek, monitor disk usage
-
-## Run as Service
+### Production (recommended)
 
 ```bash
+gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:5000 wsgi:application
+```
+
+> **Note:** `-w 1` (single worker) is required because pygame audio can only run in one process.
+
+### Run as systemd service
+
+```bash
+# Quick setup
+./install_service.sh
+
+# Or manually
 sudo cp music-scheduler.service /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl enable music-scheduler
 sudo systemctl start music-scheduler
 ```
 
+Access at: `http://<raspberry-pi-ip>:5000`
+
+## Project Structure
+
+```
+├── app.py                  # Main Flask backend (~2300 lines)
+├── wsgi.py                 # Gunicorn entry point
+├── requirements.txt        # Python dependencies
+├── install_service.sh      # Systemd service installer
+├── music-scheduler.service # Systemd service file
+├── migrate_*.py            # Database migration scripts
+├── music/                  # Music files storage
+├── instance/               # SQLite database
+├── static/                 # Static files (CSS, JS, React build)
+│   └── react/              # React frontend build output
+├── templates/              # Jinja2 templates (legacy login)
+└── frontend/               # React frontend source
+    ├── src/
+    │   ├── App.tsx         # Root component
+    │   ├── components/     # UI components
+    │   │   ├── dashboard/  # AddMusic, DiskUsage, DownloadProgress...
+    │   │   ├── player/     # Player bar (fixed bottom)
+    │   │   ├── playlist/   # Playlist with drag-and-drop
+    │   │   ├── schedule/   # Schedule management
+    │   │   └── ui/         # Button, Card, Input, Spinner...
+    │   ├── contexts/       # Socket, Theme, Toast providers
+    │   ├── lib/            # API client (axios), utilities
+    │   ├── pages/          # Dashboard, LoginPage
+    │   └── types/          # TypeScript type definitions
+    └── android/            # Capacitor Android project (gitignored)
+```
+
+## Tech Stack
+
+### Backend
+- **Flask** + Flask-SocketIO (eventlet) — HTTP API + WebSocket real-time
+- **SQLAlchemy** + SQLite — database
+- **APScheduler** — cron-like scheduling
+- **pygame** — audio playback
+- **yt-dlp** — YouTube downloads
+- **Flask-WTF** — CSRF protection
+
+### Frontend
+- **React 19** + TypeScript + Vite
+- **Tailwind CSS v4** — styling
+- **Socket.IO Client** — real-time updates
+- **Framer Motion** — animations
+- **dnd-kit** — drag-and-drop
+- **Axios** — HTTP client
+- **Lucide React** — icons
+
+### Mobile
+- **Capacitor v8** — wraps React app as Android APK
+- **Tailscale** — VPN for remote access to Pi
+
+## Android App
+
+The Android app connects directly to the Pi via Tailscale (WebView → `http://<tailscale-ip>:5000`).
+
+```bash
+cd frontend
+
+# Build frontend
+npm run build
+
+# Sync and build APK
+npx cap sync android
+cd android
+JAVA_HOME=/path/to/java-21 ./gradlew assembleDebug
+
+# APK output: android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+**Build requirements:** Node.js, Java 21, Android SDK 34.
+
 ## Troubleshooting
 
-**Audio**: Check speakers, volume (`alsamixer`), 3.5mm output (`sudo raspi-config`)
-**Network**: Verify internet connection, check firewall settings
-**Login**: Reset password with `python3 migrate_user.py`
-**Downloads**: Update yt-dlp (`sudo pip3 install --upgrade yt-dlp`), check progress bar
-**UI Issues**: Enable JavaScript, clear browser cache, check console for errors
-
-## Recent Updates
-
-- **YouTube Playlist Downloads**: Full playlist support with real-time progress
-- **Secure Authentication**: Random password generation, login system
-- **Enhanced UI**: Drag-and-drop ordering, collapsible sections, progress tracking
-- **System Improvements**: WebSocket reliability, database migrations, error handling
+| Issue | Solution |
+|-------|----------|
+| No audio output | Check `alsamixer`, set 3.5mm output (`sudo raspi-config`) |
+| Download errors | `pip install --upgrade yt-dlp` |
+| Forgot password | `python3 migrate_user.py` (generates a new password) |
+| Service not running | `sudo journalctl -u music-scheduler -f` |
+| Database issues | Check files in `instance/` directory |
 
 ## License
 

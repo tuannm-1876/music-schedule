@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import type { PlaybackState, DownloadState, Song, Schedule, PlaybackSettings } from '@/types';
+import type { PlaybackState, DownloadState, Song, Schedule, PlaybackSettings, Holiday, Playlist } from '@/types';
 
 interface SocketContextType {
   socket: Socket | null;
@@ -9,10 +9,14 @@ interface SocketContextType {
   downloadState: DownloadState;
   songs: Song[];
   schedules: Schedule[];
+  holidays: Holiday[];
+  playlists: Playlist[];
   nextSchedule: { time: string; song_title: string } | null;
   settings: PlaybackSettings;
   setSongs: React.Dispatch<React.SetStateAction<Song[]>>;
   setSchedules: React.Dispatch<React.SetStateAction<Schedule[]>>;
+  setHolidays: React.Dispatch<React.SetStateAction<Holiday[]>>;
+  setPlaylists: React.Dispatch<React.SetStateAction<Playlist[]>>;
   setPlaybackState: React.Dispatch<React.SetStateAction<PlaybackState>>;
   setNextSchedule: React.Dispatch<React.SetStateAction<{ time: string; song_title: string } | null>>;
   setSettings: React.Dispatch<React.SetStateAction<PlaybackSettings>>;
@@ -58,6 +62,8 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const [downloadState, setDownloadState] = useState<DownloadState>(defaultDownloadState);
   const [songs, setSongs] = useState<Song[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [holidays, setHolidays] = useState<Holiday[]>([]);
+  const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [nextSchedule, setNextSchedule] = useState<{ time: string; song_title: string } | null>(null);
   const [settings, setSettings] = useState<PlaybackSettings>(defaultSettings);
   const [socketVersion, setSocketVersion] = useState(0);
@@ -231,10 +237,14 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
         downloadState,
         songs,
         schedules,
+        holidays,
+        playlists,
         nextSchedule,
         settings,
         setSongs,
         setSchedules,
+        setHolidays,
+        setPlaylists,
         setPlaybackState,
         setNextSchedule,
         setSettings,

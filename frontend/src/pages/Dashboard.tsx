@@ -14,6 +14,8 @@ import { Button } from '@/components/ui';
 import { Player } from '@/components/player';
 import { Playlist } from '@/components/playlist';
 import { ScheduleManager } from '@/components/schedule';
+import { HolidayManager } from '@/components/holiday';
+import { PlaylistManager } from '@/components/playlist-manager';
 import { 
   DiskUsage, 
   AddMusic, 
@@ -138,6 +140,12 @@ export function Dashboard({ username, onLogout }: DashboardProps) {
 
             {/* Schedule Manager */}
             <ScheduleManager />
+
+            {/* Holiday Calendar */}
+            <HolidayManager />
+
+            {/* Playlist Manager */}
+            <PlaylistManager />
 
             {/* System Info */}
             {diskUsage && <DiskUsage diskUsage={diskUsage} onRefresh={setDiskUsage} />}

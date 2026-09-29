@@ -13,7 +13,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState('');
-  const { setSongs, setSchedules, setPlaybackState, setNextSchedule, setSettings, reconnectSocket } = useSocket();
+  const { setSongs, setSchedules, setHolidays, setPlaylists, setPlaybackState, setNextSchedule, setSettings, reconnectSocket } = useSocket();
   const { addToast } = useToast();
 
   // Load initial state on mount
@@ -29,6 +29,8 @@ function App() {
         if (data.is_authenticated) {
           setSongs(data.songs);
           setSchedules(data.schedules);
+          setHolidays(data.holidays || []);
+          setPlaylists(data.playlists || []);
           setNextSchedule(data.next_schedule);
           setPlaybackState({
             is_playing: data.is_playing,
@@ -51,7 +53,7 @@ function App() {
     };
 
     loadInitialState();
-  }, [setSongs, setSchedules, setPlaybackState, setSettings]);
+  }, [setSongs, setSchedules, setHolidays, setPlaylists, setPlaybackState, setSettings]);
 
   const handleLogin = async (loginUsername: string, password: string) => {
     try {
@@ -67,6 +69,8 @@ function App() {
       const data: InitialState = response.data;
       setSongs(data.songs);
       setSchedules(data.schedules);
+      setHolidays(data.holidays || []);
+      setPlaylists(data.playlists || []);
       setNextSchedule(data.next_schedule);
       setPlaybackState({
         is_playing: data.is_playing,
