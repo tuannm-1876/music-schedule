@@ -75,7 +75,11 @@ Recommended on a 1GB board: `sudo apt-get install -y zram-tools` (compressed swa
 
 ### As a systemd service (production)
 
-`music-scheduler.service` assumes user `pi` and `/home/pi/schedule-music` — edit `User`,
+Easiest: run `./install_service.sh` as your normal user. It creates/updates the venv, checks the
+Python version and JS runtime, copies `.env.example` to `.env`, writes the unit with your user and
+directory, and starts the service.
+
+Manually: `music-scheduler.service` assumes user `pi` and `/home/pi/schedule-music` — edit `User`,
 `WorkingDirectory`, `PATH` and `ExecStart` if yours differ.
 
 ```bash
@@ -165,7 +169,8 @@ to sign in again. SQLite now runs in WAL mode: back up `music.db` together with 
 ├── secret_key_loader.py      # SECRET_KEY from .env, generated on first start
 ├── wsgi.py                   # Gunicorn entry point
 ├── migrate_*.py              # upgrade scripts for databases created by older versions
-├── music-scheduler.service   # systemd unit
+├── music-scheduler.service   # systemd unit (template for user pi)
+├── install_service.sh        # one-shot installer: venv, .env, unit for the current user
 ├── requirements.txt          # runtime deps · requirements-dev.txt: pytest
 ├── .env.example              # configuration template
 ├── tests/                    # pytest suite
