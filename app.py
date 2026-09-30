@@ -27,7 +27,9 @@ import glob
 from contextlib import contextmanager
 from dotenv import load_dotenv
 
-load_dotenv()
+DOTENV_PATH = os.path.join(os.path.abspath(os.path.dirname(__file__)), '.env')
+load_dotenv(DOTENV_PATH)
+from secret_key_loader import load_secret_key  # noqa: E402
 import youtube_downloader  # noqa: E402 - reads YTDLP_* env at import time
 
 # Configure logging
@@ -67,7 +69,7 @@ app = Flask(__name__)
 csrf = CSRFProtect(app)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///music.db')
 app.config['UPLOAD_FOLDER'] = 'music'
-app.config['SECRET_KEY'] = 'super-secret-key-for-music-scheduler-app' # In production, use a secure random key and keep it secret!
+app.config['SECRET_KEY'] = load_secret_key(DOTENV_PATH)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SESSION_TYPE'] = 'filesystem'
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours session lifetime

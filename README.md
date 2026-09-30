@@ -102,6 +102,7 @@ Access at: `http://<raspberry-pi-ip>:5000`
 ```
 ├── app.py                  # Main Flask backend
 ├── youtube_downloader.py   # yt-dlp wrapper (runs yt-dlp as a child process)
+├── secret_key_loader.py    # SECRET_KEY from .env, generated on first start if missing
 ├── tests/                  # pytest suite (pip install -r requirements-dev.txt)
 ├── wsgi.py                 # Gunicorn entry point
 ├── requirements.txt        # Python dependencies

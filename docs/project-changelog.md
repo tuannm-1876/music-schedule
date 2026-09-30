@@ -12,6 +12,7 @@
 
 ### Security
 - `/add-music` only accepts YouTube hosts (blocks SSRF through yt-dlp's generic extractor).
+- `SECRET_KEY` is no longer hardcoded: it is read from `.env`, or generated once (`secrets.token_hex(32)`) and saved there with mode 600. Deploying this logs existing sessions out once; remember-me cookies keep working.
 
 ### Performance (Raspberry Pi 3B+)
 - Playback broadcast: one 1s greenlet loop instead of a 0.5s APScheduler job, song title cached, no emits while idle and unchanged.
