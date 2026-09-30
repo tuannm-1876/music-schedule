@@ -41,6 +41,9 @@ START_MARK, PROGRESS_MARK, DONE_MARK = '@@S ', '@@P ', '@@D '
 # Known yt-dlp error fragments -> user-facing hint
 ERROR_HINTS = [
     ('javascript runtime', 'Thiếu JS runtime (Deno/Node) trên máy chủ, xem README mục yt-dlp'),
+    # A firewall doing TLS inspection (e.g. FortiGate) swaps YouTube's certificate
+    ('certificate verify failed', 'Mạng đang chặn YouTube (tường lửa soi SSL). Nhờ IT mở YouTube cho máy chủ, '
+                                  'hoặc tải file về rồi dùng mục Upload'),
     ('not a bot', 'YouTube chặn vì nghi là bot, cần cấu hình YTDLP_COOKIES_FILE'),
     ('confirm your age', 'Video giới hạn độ tuổi, cần cookies của tài khoản đã xác minh'),
     ('private video', 'Video ở chế độ riêng tư'),

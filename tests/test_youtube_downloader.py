@@ -40,6 +40,8 @@ def test_is_allowed_url(url, allowed):
     ("ERROR: [youtube] x: Sign in to confirm you’re not a bot", 'bot'),
     ('ERROR: [youtube] x: Sign in to confirm your age', 'độ tuổi'),
     ('ERROR: [youtube] x: Private video', 'riêng tư'),
+    ('ERROR: [youtube] x: Unable to download API page: [SSL: CERTIFICATE_VERIFY_FAILED] certificate '
+     'verify failed: unable to get local issuer certificate', 'tường lửa'),
     ('ERROR: [youtube] x: Unable to download webpage: HTTP Error 403', 'Unable to download webpage'),
 ])
 def test_friendly_error(raw, fragment):
