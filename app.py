@@ -2,29 +2,36 @@
 import eventlet
 eventlet.monkey_patch()
 
-from flask import Flask, render_template, jsonify, request, redirect, url_for, send_file, session, send_from_directory
+from flask import Flask, render_template, jsonify, request, redirect, url_for, send_file, session, send_from_directory, g
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import event as sa_event
+from sqlalchemy.engine import Engine
 from flask_socketio import SocketIO, emit
 from flask_wtf.csrf import CSRFProtect
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
-import yt_dlp
+from datetime import datetime, timedelta
+import hashlib
 import pygame
+import time
 import os
 import json
-import subprocess
-import sys
 import logging
 import shutil
-import re
 import secrets
+import sqlite3
 from werkzeug.utils import secure_filename
 import mutagen
 from mutagen.mp3 import MP3
 import glob
 from contextlib import contextmanager
+from dotenv import load_dotenv
+
+DOTENV_PATH = os.path.join(os.path.abspath(os.path.dirname(__file__)), '.env')
+load_dotenv(DOTENV_PATH)
+from secret_key_loader import load_secret_key  # noqa: E402
+import youtube_downloader  # noqa: E402 - reads YTDLP_* env at import time
 
 # Configure logging
 logging.basicConfig(
@@ -39,9 +46,18 @@ logging.getLogger('apscheduler').setLevel(logging.WARNING)
 # Constants
 ALLOWED_EXTENSIONS = {'mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'}
 DEFAULT_VOLUME = 0.5
-BROADCAST_INTERVAL = 0.5
-UPDATE_YTDLP_HOUR = 1
+BROADCAST_INTERVAL = 1.0  # seconds; 1s is smooth enough for the progress bar and cheap on a Pi
+UPDATE_YTDLP_HOUR = 3  # off-peak; skipped while playing or downloading
+PROGRESS_EMIT_INTERVAL = 1.0  # seconds between download progress events
 MAX_UPLOAD_SIZE = 150 * 1024 * 1024  # 150MB
+
+# Login persistence: a sliding session cookie backed by one refresh token per device
+SESSION_LIFETIME = timedelta(days=30)   # extended on every request
+REFRESH_TOKEN_LIFETIME = timedelta(days=365)  # extended whenever the token is used
+REFRESH_TOKEN_TOUCH_INTERVAL = timedelta(days=1)  # limits DB writes on the Pi's SD card
+MAX_REFRESH_TOKENS_PER_USER = 20
+REFRESH_COOKIE = 'refresh_token'
+LEGACY_REMEMBER_COOKIE = 'remember_token'  # pre-refresh-token cookie, migrated on first use
 
 # Global download state
 download_state = {
@@ -52,24 +68,36 @@ download_state = {
     'total': 0,
     'current_song': '',
     'playlist_title': '',
-    'cancelled': False
+    'cancelled': False,
+    'percent': 0
 }
+download_job = None  # youtube_downloader.DownloadJob while a download runs
+ytdlp_updating = False  # blocks new downloads while pip rewrites the yt-dlp package
 
 app = Flask(__name__)
 csrf = CSRFProtect(app)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///music.db' 
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///music.db')
 app.config['UPLOAD_FOLDER'] = 'music'
-app.config['SECRET_KEY'] = 'super-secret-key-for-music-scheduler-app' # In production, use a secure random key and keep it secret!
+app.config['SECRET_KEY'] = load_secret_key(DOTENV_PATH)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SESSION_TYPE'] = 'filesystem'
-app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours session lifetime
+app.config['PERMANENT_SESSION_LIFETIME'] = SESSION_LIFETIME
+app.config['SESSION_REFRESH_EACH_REQUEST'] = True  # sliding expiry
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_SIZE # Limit upload size to prevent abuse
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax' # Adjust as needed for your frontend setup (e.g., 'None' for cross-origin)
 app.config['SESSION_COOKIE_SECURE'] = False # Set to True if using HTTPS
-app.config['REMEMBER_COOKIE_DURATION'] = 365 * 24 * 3600  # 1 year
 
 socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins='*', message_queue=None)
 db = SQLAlchemy(app)
+
+@sa_event.listens_for(Engine, 'connect')
+def _set_sqlite_pragmas(dbapi_conn, _record):
+    """WAL + NORMAL sync: far fewer fsyncs on the Pi's SD card, readers never block writers."""
+    if isinstance(dbapi_conn, sqlite3.Connection):
+        cursor = dbapi_conn.cursor()
+        cursor.execute('PRAGMA journal_mode=WAL')
+        cursor.execute('PRAGMA synchronous=NORMAL')
+        cursor.close()
 
 # Get absolute path for the project directory
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -111,63 +139,54 @@ pygame.mixer.music.set_volume(DEFAULT_VOLUME)
 
 # Initialize scheduler
 scheduler = None
+
+# Scheduled playlist queue for sequential playback (play_all mode)
+scheduled_playlist_queue = []  # List of song IDs to play sequentially
+scheduled_playlist_volume = 100  # Volume for the current scheduled playlist
 # Download state management functions
-def set_download_state(status, message='', current=0, total=0, current_song='', playlist_title='', cancelled=False):
-    """Update global download state"""
-    global download_state
+def publish_download_state(status, message='', current=0, total=0, current_song='', percent=0, cancelled=False):
+    """Update global download state and push it to every client."""
     download_state.update({
-        'active': status != 'completed' and status != 'error' and status != 'cancelled',
+        'active': status not in ('completed', 'error', 'cancelled'),
         'status': status,
         'message': message,
         'current': current,
         'total': total,
         'current_song': current_song,
-        'playlist_title': playlist_title,
-        'cancelled': cancelled
+        'cancelled': cancelled,
+        'percent': round(percent, 1),
     })
-    logger.info(f"Download state updated: {download_state}")
+    logger.debug(f"Download state updated: {download_state}")
+    socketio.emit('download_progress', dict(download_state))
 
 def get_download_state():
     """Get current download state"""
     return download_state.copy()
 
-def clear_download_state():
-    """Clear download state"""
-    global download_state
-    download_state = {
-        'active': False,
-        'status': '',
-        'message': '',
-        'current': 0,
-        'total': 0,
-        'current_song': '',
-        'playlist_title': '',
-        'cancelled': False
-    }
-
 def cancel_download():
-    """Cancel current download"""
-    global download_state
-    if download_state['active']:
-        download_state['cancelled'] = True
-        set_download_state('cancelled', 'Download has been cancelled', download_state['current'], download_state['total'], cancelled=True)
-        logger.info("Download cancelled by user")
-        socketio.emit('download_progress', {
-            'status': 'cancelled',
-            'message': 'Download has been cancelled',
-            'current': download_state['current'],
-            'total': download_state['total']
-        })
-        return True
-    return False
+    """Cancel the running download job, if any"""
+    if download_job is None:
+        return False
+    download_job.cancel()
+    publish_download_state('cancelling', 'Đang hủy...', download_state['current'], download_state['total'])
+    logger.info("Download cancelled by user")
+    return True
 
 def init_scheduler():
     global scheduler
     if scheduler is None:
         scheduler = BackgroundScheduler()
         scheduler.start()
-        scheduler.add_job(safe_broadcast, 'interval', seconds=BROADCAST_INTERVAL, id='broadcast_playback')
-        scheduler.add_job(update_ytdlp, 'cron', hour=UPDATE_YTDLP_HOUR, id='update_ytdlp')
+        socketio.start_background_task(playback_broadcast_loop)
+        scheduler.add_job(scheduled_ytdlp_update, 'cron', hour=UPDATE_YTDLP_HOUR, id='update_ytdlp')
+
+def write_initial_admin_password(password):
+    os.makedirs(app.instance_path, exist_ok=True)
+    path = os.path.join(app.instance_path, 'initial-admin-password.txt')
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(password + '\n')
+    return path
 
 def init_admin_user():
     """Initialize the admin user if not exists"""
@@ -208,18 +227,10 @@ def init_admin_user():
                 db_session.add(admin)
                 db_session.commit()
                 
-                # Display password prominently
-                print("\n" + "="*60)
-                print("🔐 ADMIN PASSWORD GENERATED")
-                print("="*60)
-                print(f"Username: admin")
-                print(f"Password: {random_password}")
-                print("="*60)
-                print("⚠️  SAVE THIS PASSWORD NOW! It will not be shown again.")
-                print("="*60 + "\n")
-                
-                logger.info("Admin user created successfully")
-                logger.info(f"Admin password: {random_password}")
+                # Never print the password: stdout/logs end up in the systemd journal
+                password_file = write_initial_admin_password(random_password)
+                logger.warning(f"Admin user created. Read the password with: cat {password_file} "
+                               "(delete the file after saving it)")
             else:
                 logger.info("Admin user already exists")
     except Exception as e:
@@ -253,8 +264,32 @@ def session_scope():
     finally:
         session.close()
 
-def broadcast_playback_state():
-    """Broadcast current playback state to all clients"""
+_title_cache = {'song_id': None, 'title': None}
+_last_idle_payload = None
+
+def get_cached_song_title(song_id):
+    """Title of the playing song; the DB is only hit when the song changes."""
+    if song_id is None:
+        return None
+    if _title_cache['song_id'] != song_id:
+        with app.app_context():
+            with session_scope() as session:
+                song = session.get(Song, song_id)
+                _title_cache.update(song_id=song_id, title=song.title if song else None)
+    return _title_cache['title']
+
+def playback_broadcast_loop():
+    """Single long-lived greenlet replacing the old 0.5s APScheduler job."""
+    while True:
+        broadcast_playback_state(force=False)
+        socketio.sleep(BROADCAST_INTERVAL)
+
+def broadcast_playback_state(force=True):
+    """Broadcast current playback state to all clients.
+
+    With force=False (the periodic loop) nothing is sent while idle and unchanged.
+    """
+    global _last_idle_payload
     try:
         global current_position, current_song_id, current_song_duration, is_playing, seek_offset
         
@@ -297,31 +332,39 @@ def broadcast_playback_state():
                 'deleted_song_id': deleted_song_id
             })
 
-        # Get current song title
-        current_title = None
-        if current_song_id:
-            try:
-                with app.app_context():
-                    with session_scope() as session:
-                        song = session.get(Song, current_song_id)
-                        if song:
-                            current_title = song.title
-            except Exception as e:
-                logger.error(f"Error getting song title: {e}")
-        
-        socketio.emit('playback_update', {
+            # Auto-advance scheduled playlist queue (play_all mode)
+            if scheduled_playlist_queue:
+                next_id = scheduled_playlist_queue.pop(0)
+                logger.info(f"Auto-advancing scheduled playlist queue: playing song_id={next_id}, remaining={len(scheduled_playlist_queue)}")
+                def _play_queued():
+                    with app.app_context():
+                        apply_volume(scheduled_playlist_volume)
+                        play_music(next_id)
+                socketio.start_background_task(_play_queued)
+
+        try:
+            current_title = get_cached_song_title(current_song_id)
+        except Exception as e:
+            logger.error(f"Error getting song title: {e}")
+            current_title = None
+
+        payload = {
             'position': current_position,
             'duration': current_song_duration,
             'is_playing': music_busy,
             'volume': int(volume * 100),
             'current_song_id': current_song_id,
             'current_song_title': current_title
-        })
+        }
+        if not music_busy:
+            if not force and payload == _last_idle_payload:
+                return
+            _last_idle_payload = payload
+        else:
+            _last_idle_payload = None
+        socketio.emit('playback_update', payload)
     except Exception as e:
         logger.error(f"Error in broadcast_playback_state: {e}")
-
-def safe_broadcast():
-    socketio.start_background_task(broadcast_playback_state)
 
 
 def fade_in():
@@ -362,13 +405,26 @@ def fade_out():
 
 
 # Models
+class Playlist(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False, unique=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    songs = db.relationship('Song', backref='playlist', lazy=True)
+
+class Holiday(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    date = db.Column(db.String(10), nullable=False, unique=True)  # Format: "YYYY-MM-DD"
+    name = db.Column(db.String(200), nullable=False)
+
 class Schedule(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     time = db.Column(db.String(5), nullable=False)  # Format: "HH:MM"
     enabled = db.Column(db.Boolean, default=True)
     one_time = db.Column(db.Boolean, default=False)  # If True, disable after playing once
-    song_category = db.Column(db.String(20), default='music')  # 'music', 'announcement', or 'all'
     volume = db.Column(db.Integer, default=100)  # Volume level (0-100)
+    playlist_id = db.Column(db.Integer, db.ForeignKey('playlist.id'), nullable=True)  # If set, play from this playlist
+    play_all = db.Column(db.Boolean, default=False)  # If True, play all songs in the playlist sequentially
+    playlist = db.relationship('Playlist', backref='schedules')
     monday = db.Column(db.Boolean, default=True)
     tuesday = db.Column(db.Boolean, default=True)
     wednesday = db.Column(db.Boolean, default=True)
@@ -395,8 +451,8 @@ class Song(db.Model):
     filename = db.Column(db.String(200), nullable=False, unique=True)
     priority = db.Column(db.Integer, default=0)
     position = db.Column(db.Integer, default=0)  # New field for song ordering
-    category = db.Column(db.String(20), default='music')  # 'music' or 'announcement'
     delete_after_play = db.Column(db.Boolean, default=False)  # Delete song after playing
+    playlist_id = db.Column(db.Integer, db.ForeignKey('playlist.id'), nullable=True)
     source = db.Column(db.String(50))
     duration = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -418,29 +474,111 @@ class User(db.Model):
         self.remember_token = secrets.token_urlsafe(64)
         return self.remember_token
 
+class AuthToken(db.Model):
+    """Long-lived refresh token, one per logged-in device. Only its SHA-256 is stored."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    token_hash = db.Column(db.String(64), unique=True, nullable=False)
+    user_agent = db.Column(db.String(200))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_used_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+
+def hash_token(raw):
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+def start_user_session(user):
+    session.clear()
+    session['user_id'] = user.id
+    session['username'] = user.username
+    session.permanent = True
+
+def issue_refresh_token(db_session, user):
+    """Create a refresh token for this device; the cookie is set in after_request."""
+    now = datetime.utcnow()
+    raw = secrets.token_urlsafe(48)
+    db_session.add(AuthToken(
+        user_id=user.id,
+        token_hash=hash_token(raw),
+        user_agent=(request.user_agent.string or '')[:200],
+        created_at=now,
+        last_used_at=now,
+        expires_at=now + REFRESH_TOKEN_LIFETIME,
+    ))
+    db_session.query(AuthToken).filter(AuthToken.user_id == user.id, AuthToken.expires_at <= now).delete()
+    db_session.flush()
+    stale = db_session.query(AuthToken.id).filter_by(user_id=user.id).order_by(
+        AuthToken.last_used_at.desc()).offset(MAX_REFRESH_TOKENS_PER_USER).all()
+    if stale:
+        db_session.query(AuthToken).filter(AuthToken.id.in_([t.id for t in stale])).delete(synchronize_session=False)
+    g.set_refresh_cookie = raw
+
+def user_from_refresh_cookies(db_session):
+    """Resolve the user from the refresh cookie (or a legacy remember_token cookie)."""
+    now = datetime.utcnow()
+    raw = request.cookies.get(REFRESH_COOKIE)
+    if raw:
+        token = db_session.query(AuthToken).filter_by(token_hash=hash_token(raw)).first()
+        if token and token.expires_at > now:
+            if now - token.last_used_at >= REFRESH_TOKEN_TOUCH_INTERVAL:
+                token.last_used_at = now
+                token.expires_at = now + REFRESH_TOKEN_LIFETIME
+                g.set_refresh_cookie = raw  # re-send so the browser's copy slides too
+            return db_session.get(User, token.user_id)
+        g.clear_refresh_cookie = True
+
+    legacy = request.cookies.get(LEGACY_REMEMBER_COOKIE)
+    if legacy:
+        user = db_session.query(User).filter_by(remember_token=legacy).first()
+        g.clear_legacy_cookie = True
+        if user:
+            user.remember_token = None
+            issue_refresh_token(db_session, user)
+            logger.info(f"[Auth] Migrated legacy remember_token for '{user.username}'")
+            return user
+    return None
+
+def revoke_refresh_token():
+    raw = request.cookies.get(REFRESH_COOKIE)
+    if raw:
+        with session_scope() as db_session:
+            db_session.query(AuthToken).filter_by(token_hash=hash_token(raw)).delete()
+
+@app.after_request
+def apply_auth_cookies(response):
+    raw = g.pop('set_refresh_cookie', None)
+    if raw:
+        response.set_cookie(
+            REFRESH_COOKIE, raw,
+            max_age=int(REFRESH_TOKEN_LIFETIME.total_seconds()),
+            httponly=True, samesite='Lax',
+            secure=app.config['SESSION_COOKIE_SECURE'],
+        )
+    elif g.pop('clear_refresh_cookie', False):
+        response.delete_cookie(REFRESH_COOKIE)
+    if g.pop('clear_legacy_cookie', False):
+        response.delete_cookie(LEGACY_REMEMBER_COOKIE)
+    return response
+
 # Create a function to check if a user is logged in
 def get_authenticated_user():
-    """Check authentication via session cookie, with remember_token fallback.
+    """Check authentication via session cookie, with refresh-token fallback.
     Returns (user_id, username) or (None, None)."""
     # Check session first
     if 'user_id' in session:
         return session['user_id'], session.get('username', '')
     
-    # Check remember_token cookie for persistent login
-    remember_token = request.cookies.get('remember_token')
-    if remember_token:
+    # Session gone (expired, cleared, new SECRET_KEY): fall back to this device's refresh token
+    if REFRESH_COOKIE in request.cookies or LEGACY_REMEMBER_COOKIE in request.cookies:
         try:
             with session_scope() as db_session:
-                user = db_session.query(User).filter_by(remember_token=remember_token).first()
+                user = user_from_refresh_cookies(db_session)
                 if user:
-                    # Restore session from remember token
-                    session['user_id'] = user.id
-                    session['username'] = user.username
-                    session.permanent = True
+                    start_user_session(user)
                     return user.id, user.username
         except Exception as e:
-            logger.error(f"[Auth] Error checking remember_token: {e}")
-    
+            logger.error(f"[Auth] Error checking refresh token: {e}")
+
     return None, None
 
 def login_required(f):
@@ -456,7 +594,8 @@ def login_required(f):
 def socketio_login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'user_id' in session:
+        user_id, _ = get_authenticated_user()
+        if user_id is not None:
             return f(*args, **kwargs)
         emit('error', {'message': 'Unauthorized. Please login.'})
         return
@@ -487,71 +626,6 @@ def get_audio_duration(filename):
     except Exception as e:
         logger.error(f"Error getting audio duration for {filename}: {e}")
         return 0
-
-def update_ytdlp():
-    """Update yt-dlp with multiple methods compatible with Raspberry Pi"""
-    try:
-        venv_python = os.path.join(BASE_DIR, "venv", "bin", "python")
-        venv_pip = os.path.join(BASE_DIR, "venv", "bin", "pip")
-
-        if os.path.exists(venv_python) and os.path.exists(venv_pip):
-            logger.info("Attempting to update yt-dlp using virtual environment")
-            subprocess.check_call([venv_pip, "install", "--upgrade", "yt-dlp"])
-            logger.info("yt-dlp updated successfully using virtual environment")
-            return
-
-        # On modern Debian/Raspberry Pi OS, pip commands can fail with an
-        # 'externally-managed-environment' error. The following methods attempt to work around this.
-
-        # Method 1: Use pip with --break-system-packages. This is the direct override for the error.
-        try:
-            logger.info("Attempting to update yt-dlp with --break-system-packages")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--break-system-packages", "--upgrade", "yt-dlp"])
-            logger.info("yt-dlp updated successfully with --break-system-packages")
-            return
-        except subprocess.CalledProcessError:
-            logger.warning("Update with --break-system-packages failed. Trying next method.")
-            pass
-
-        # Method 2: Try installing for the current user. This might also be blocked.
-        try:
-            logger.info("Attempting to update yt-dlp for user")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "--upgrade", "yt-dlp"])
-            logger.info("yt-dlp updated successfully for user")
-            return
-        except subprocess.CalledProcessError:
-            logger.warning("Update with --user failed. Trying next method.")
-            pass
-
-        # Method 3: Use the system package manager (apt).
-        # Note: This requires the user running the app to have passwordless sudo access.
-        try:
-            logger.info("Attempting to update yt-dlp using apt-get")
-            subprocess.check_call(["sudo", "apt-get", "update"])
-            subprocess.check_call(["sudo", "apt-get", "install", "-y", "yt-dlp"])
-            logger.info("yt-dlp updated successfully using apt-get")
-            return
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            logger.warning("Update with apt-get failed. This may be due to permissions or apt-get not being found.")
-            pass
-
-        logger.error("All update methods for yt-dlp have failed. Please update it manually.")
-
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during yt-dlp update: {e}")
-
-def get_ytdlp_version():
-    """Get current yt-dlp version"""
-    try:
-        result = subprocess.run([sys.executable, "-m", "yt_dlp", "--version"],
-                              capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            return result.stdout.strip()
-        else:
-            return "Unknown"
-    except Exception as e:
-        logger.error(f"Error getting yt-dlp version: {e}")
-        return "Unknown"
 
 def get_next_scheduled_song():
     now = datetime.now()
@@ -643,30 +717,11 @@ def schedule_music():
         try:
             if scheduler is None:
                 init_scheduler()
-            # Store existing jobs we want to preserve
-            preserved_jobs = {}
+            # Rebuild only the playback schedules; system jobs (yt-dlp update) stay as they are
             for job in scheduler.get_jobs():
-                if job.id in ['broadcast_playback', 'update_ytdlp']:
-                    preserved_jobs[job.id] = job.trigger
-                    
-            scheduler.remove_all_jobs()
-            
-            # Restore preserved jobs
-            if 'broadcast_playback' in preserved_jobs:
-                scheduler.add_job(
-                    broadcast_playback_state,
-                    'interval',
-                    seconds=BROADCAST_INTERVAL,
-                    id='broadcast_playback'
-                )
-            
-            if 'update_ytdlp' in preserved_jobs:
-                scheduler.add_job(
-                    update_ytdlp,
-                    'cron',
-                    hour=UPDATE_YTDLP_HOUR,
-                    id='update_ytdlp'
-                )
+                if job.id.startswith('schedule_'):
+                    job.remove()
+
             with session_scope() as session:
                 schedules = session.query(Schedule).filter_by(enabled=True).all()
                 logger.info(f"Setting up schedules: {len(schedules)} found")
@@ -698,10 +753,11 @@ def schedule_music():
                             now = datetime.now()
                             schedule_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
                             
-                            # Pass schedule_id, one_time flag, song_category, and volume to the job
-                            song_category = schedule.song_category or 'music'
+                            # Pass schedule_id, one_time flag, volume, playlist_id, and play_all to the job
                             volume = schedule.volume if schedule.volume is not None else 100
-                            job_args = [schedule.id, schedule.one_time, song_category, volume]
+                            playlist_id = schedule.playlist_id
+                            play_all = schedule.play_all if schedule.play_all is not None else False
+                            job_args = [schedule.id, schedule.one_time, volume, playlist_id, play_all]
                             
                             if schedule_time > now:
                                 scheduler.add_job(
@@ -715,7 +771,7 @@ def schedule_music():
                                     replace_existing=True,
                                     next_run_time=schedule_time
                                 )
-                                logger.info(f"Added job {job_id} with next run today at {schedule_time}, one_time={schedule.one_time}, category={song_category}")
+                                logger.info(f"Added job {job_id} with next run today at {schedule_time}, one_time={schedule.one_time}, playlist_id={playlist_id}")
                             else:
                                 scheduler.add_job(
                                     play_next_song,
@@ -727,7 +783,7 @@ def schedule_music():
                                     args=job_args,
                                     replace_existing=True
                                 )
-                                logger.info(f"Added job {job_id} for days: {','.join(days_of_week)} at {hour:02d}:{minute:02d}, one_time={schedule.one_time}, category={song_category}")
+                                logger.info(f"Added job {job_id} for days: {','.join(days_of_week)} at {hour:02d}:{minute:02d}, one_time={schedule.one_time}, playlist_id={playlist_id}")
                         else:
                             logger.warning(f"Schedule {schedule.id} has no enabled days, skipping")
                     except ValueError as e:
@@ -745,82 +801,109 @@ def schedule_music():
                 
         except Exception as e:
             logger.error(f"Error in schedule_music: {e}")
-            # Attempt to restore critical jobs on error
-            try:
-                if 'broadcast_playback' not in scheduler:
-                    scheduler.add_job(
-                        broadcast_playback_state,
-                        'interval',
-                        seconds=BROADCAST_INTERVAL,
-                        id='broadcast_playback'
-                    )
-            except Exception as e:
-                logger.error(f"Failed to restore broadcast job: {e}")
             return False
 
-def play_next_song(schedule_id=None, one_time=False, song_category='music', volume=100):
+def play_next_song(schedule_id=None, one_time=False, volume=100, playlist_id=None, play_all=False):
+    global scheduled_playlist_queue, scheduled_playlist_volume
     with app.app_context():
-        logger.info(f"Scheduler triggered play next song (schedule_id={schedule_id}, one_time={one_time}, shuffle={shuffle_mode}, category={song_category}, volume={volume})")
+        logger.info(f"Scheduler triggered play next song (schedule_id={schedule_id}, one_time={one_time}, shuffle={shuffle_mode}, volume={volume}, playlist_id={playlist_id}, play_all={play_all})")
         try:
+            # Check if today is a holiday
+            today_str = datetime.now().strftime('%Y-%m-%d')
             with session_scope() as session:
-                # Build base query with category filter
+                holiday = session.query(Holiday).filter_by(date=today_str).first()
+                if holiday:
+                    logger.info(f"Today is a holiday ({holiday.name}), skipping scheduled playback")
+                    return
+
+            with session_scope() as session:
+                # Build base query with playlist filter
                 base_query = session.query(Song)
-                if song_category and song_category != 'all':
-                    base_query = base_query.filter(Song.category == song_category)
-                
-                if shuffle_mode:
-                    # Shuffle mode: pick a random song from filtered category
-                    from sqlalchemy.sql.expression import func
-                    next_song = base_query.order_by(func.random()).first()
-                    logger.info(f"Shuffle mode: randomly selected song from category '{song_category}'")
-                else:
-                    # Normal mode: prioritize songs that haven't been played
-                    next_song = base_query.order_by(
+                if playlist_id:
+                    base_query = base_query.filter(Song.playlist_id == playlist_id)
+
+                if play_all and playlist_id:
+                    # Play all songs in the playlist sequentially
+                    all_songs = base_query.order_by(
                         Song.position.asc(),
                         Song.last_played_at.is_(None).desc(),
                         Song.priority.desc(),
                         Song.last_played_at.asc()
-                    ).first()
-
-                if next_song:
-                    logger.info(f"Playing song: {next_song.title} (category: {next_song.category})")
-                    # Set volume before playing
-                    apply_volume(volume)
-                    # Trigger playlist update through socket
-                    socketio.emit('schedule_triggered', {
-                        'song_id': next_song.id,
-                        'title': next_song.title,
-                        'time': datetime.now().strftime("%H:%M"),
-                        'category': next_song.category,
-                        'volume': volume
-                    })
-                    play_music(next_song.id)
-                    
-                    # If this is a one-time schedule, disable it after playing
-                    if one_time and schedule_id:
-                        schedule = session.get(Schedule, schedule_id)
-                        if schedule:
-                            schedule.enabled = False
-                            logger.info(f"Disabled one-time schedule {schedule_id}")
-                            # Emit schedule update to clients
-                            socketio.emit('schedule_updated', {
-                                'id': schedule_id,
-                                'is_active': False
-                            })
+                    ).all()
+                    if all_songs:
+                        first_song = all_songs[0]
+                        # Populate global queue with remaining songs
+                        scheduled_playlist_queue = [s.id for s in all_songs[1:]]
+                        scheduled_playlist_volume = volume
+                        logger.info(f"play_all mode: {len(all_songs)} songs queued, starting with '{first_song.title}'")
+                        apply_volume(volume)
+                        socketio.emit('schedule_triggered', {
+                            'song_id': first_song.id,
+                            'title': first_song.title,
+                            'time': datetime.now().strftime("%H:%M"),
+                            'volume': volume,
+                            'play_all': True,
+                            'total_songs': len(all_songs)
+                        })
+                        play_music(first_song.id)
+                    else:
+                        logger.warning(f"play_all mode: no songs found in playlist_id={playlist_id}")
                 else:
-                    logger.warning(f"No songs found in category '{song_category}'")
-                    
+                    # Clear any existing queue
+                    scheduled_playlist_queue = []
+
+                    if shuffle_mode:
+                        # Shuffle mode: pick a random song
+                        from sqlalchemy.sql.expression import func
+                        next_song = base_query.order_by(func.random()).first()
+                        logger.info(f"Shuffle mode: randomly selected song (playlist_id={playlist_id})")
+                    else:
+                        # Normal mode: prioritize songs that haven't been played
+                        next_song = base_query.order_by(
+                            Song.position.asc(),
+                            Song.last_played_at.is_(None).desc(),
+                            Song.priority.desc(),
+                            Song.last_played_at.asc()
+                        ).first()
+
+                    if next_song:
+                        logger.info(f"Playing song: {next_song.title} (playlist_id={next_song.playlist_id})")
+                        # Set volume before playing
+                        apply_volume(volume)
+                        # Trigger playlist update through socket
+                        socketio.emit('schedule_triggered', {
+                            'song_id': next_song.id,
+                            'title': next_song.title,
+                            'time': datetime.now().strftime("%H:%M"),
+                            'volume': volume
+                        })
+                        play_music(next_song.id)
+                    else:
+                        logger.warning(f"No songs found (playlist_id={playlist_id})")
+
+                # If this is a one-time schedule, disable it after playing
+                if one_time and schedule_id:
+                    schedule = session.get(Schedule, schedule_id)
+                    if schedule:
+                        schedule.enabled = False
+                        logger.info(f"Disabled one-time schedule {schedule_id}")
+                        # Emit schedule update to clients
+                        socketio.emit('schedule_updated', {
+                            'id': schedule_id,
+                            'is_active': False
+                        })
+
             # Broadcast next schedule update after potential disable
             if one_time and schedule_id:
                 broadcast_next_schedule()
                 schedule_music()  # Reload schedules to remove the disabled job
-                
+
         except Exception as e:
             logger.error(f"Error playing next song: {e}")
 
 def play_music(song_id):
     global current_song_id, current_song_duration, is_playing, current_position, seek_offset
-    
+    _title_cache['song_id'] = None  # SQLite may reuse ids of deleted songs
     try:
         with session_scope() as session:
             song = session.get(Song, song_id)
@@ -886,270 +969,120 @@ def play_music(song_id):
         logger.error(f"Error playing music: {e}")
         return False
 
-def normalize_filename(title):
-    # Replace special characters and spaces
-    # Remove any character that is not alphanumeric, space, or underscore
-    title = re.sub(r'[^\w\s]', '', title)
-    # Replace spaces with underscores
-    title = title.replace(' ', '_')
-    # Ensure only one underscore between words
-    title = re.sub(r'_+', '_', title)
-    return title
+def serialize_songs(db_session):
+    """All songs in playlist order, in the shape the React frontend expects."""
+    songs = db_session.query(Song).order_by(
+        Song.position.asc(),
+        Song.last_played_at.is_(None).desc(),
+        Song.priority.desc(),
+        Song.last_played_at.asc()
+    ).all()
+    return [{
+        'id': s.id,
+        'title': s.title,
+        'duration': s.duration,
+        'source': s.source,
+        'file_path': s.filename,
+        'position': s.position,
+        'delete_after_play': s.delete_after_play or False,
+        'playlist_id': s.playlist_id,
+        'last_played_at': s.last_played_at.isoformat() if s.last_played_at else None,
+        'priority': s.priority,
+        'created_at': s.created_at.isoformat() if s.created_at else None
+    } for s in songs]
 
-def is_playlist_url(url):
-    """Check if URL is a playlist"""
-    playlist_indicators = [
-        'playlist?list=',
-        '&list=',
-        '/playlist/',
-        'music.youtube.com/playlist'
-    ]
-    return any(indicator in url for indicator in playlist_indicators)
+def add_downloaded_song(item, source):
+    """Insert a finished yt-dlp item into the DB. Returns False if it already existed."""
+    filepath = item.get('filepath')
+    if not filepath or not os.path.isfile(filepath):
+        logger.error(f"Downloaded file missing: {filepath}")
+        return False
+    filename = os.path.relpath(filepath, BASE_DIR)
+    with session_scope() as db_session:
+        if db_session.query(Song).filter_by(filename=filename).first():
+            logger.info(f"Song already exists in database: {filename}")
+            return False
+        max_position = db_session.query(db.func.max(Song.position)).scalar() or -1
+        db_session.add(Song(
+            title=item.get('title') or os.path.splitext(os.path.basename(filename))[0],
+            filename=filename,
+            source=source,
+            duration=int(item.get('duration') or 0) or get_audio_duration(filepath),
+            position=max_position + 1
+        ))
+    with session_scope() as db_session:
+        socketio.emit('song_added', {'title': item.get('title'), 'songs': serialize_songs(db_session)})
+    return True
 
-def download_single_track(url):
-    """Download a single track from YouTube"""
+def run_download_job(job):
+    """Drive a DownloadJob from a greenlet: persist songs and publish progress."""
+    global download_job
+    source = 'youtube_playlist' if job.is_playlist else 'youtube'
+    index, total, title = 0, 1, ''
+    added, existing = 0, 0
+    failed_items = set()  # yt-dlp may print several ERROR lines for one item
+    last_emit = 0.0
     try:
-        # First extract info without downloading
-        with yt_dlp.YoutubeDL({'extract_flat': True}) as ydl:
-            info = ydl.extract_info(url, download=False)
-            duration = int(info.get('duration', 0))
-            normalized_title = normalize_filename(info['title'])
-            
-        # Then download with normalized filename
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': os.path.join(MUSIC_DIR, f'{normalized_title}.%(ext)s'),
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        
-        # Get the actual mp3 file
-        mp3_file = os.path.join(MUSIC_DIR, f'{normalized_title}.mp3')
-        if not os.path.exists(mp3_file):
-            raise Exception(f"Downloaded file not found: {mp3_file}")
-            
-        actual_filename = os.path.relpath(mp3_file, BASE_DIR)
-        
-        if duration == 0:
-            duration = get_audio_duration(mp3_file)
-        
-        return {
-            'title': info['title'],
-            'filename': actual_filename,
-            'duration': duration
-        }
-    except Exception as e:
-        logger.error(f"Error downloading single track from {url}: {e}")
-        raise
-
-def download_playlist(url):
-    """Download all tracks from a YouTube playlist"""
-    try:
-        logger.info(f"Processing playlist: {url}")
-        
-        # Update state and emit start event
-        set_download_state('analyzing', 'Analyzing playlist...', 0, 0)
-        socketio.emit('download_progress', {
-            'status': 'analyzing',
-            'message': 'Analyzing playlist...',
-            'current': 0,
-            'total': 0
-        })
-        
-        # Extract playlist info
-        ydl_opts_info = {
-            'extract_flat': True,
-            'quiet': False,
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
-            playlist_info = ydl.extract_info(url, download=False)
-            
-        if 'entries' not in playlist_info:
-            raise Exception("Unable to extract song list from playlist")
-            
-        entries = playlist_info['entries']
-        if not entries:
-            raise Exception("Playlist is empty or inaccessible")
-            
-        playlist_title = playlist_info.get('title', 'Unknown')
-        logger.info(f"Found {len(entries)} songs in playlist: {playlist_title}")
-        
-        
-        downloaded_songs = []
-        failed_downloads = []
-        
-        # Download each track individually
-        for i, entry in enumerate(entries, 1):
-            # Check if download has been cancelled
-            if download_state.get('cancelled', False):
-                logger.info("Download cancelled by user, stopping playlist download")
-                clear_download_state()
-                socketio.emit('download_progress', {
-                    'status': 'cancelled',
-                    'message': 'Download has been cancelled',
-                    'current': i-1,
-                    'total': len(entries)
-                })
-                return {
-                    'playlist_title': playlist_info.get('title', 'Unknown Playlist'),
-                    'total_tracks': len(entries),
-                    'downloaded_tracks': len(downloaded_songs),
-                    'failed_tracks': len(failed_downloads),
-                    'songs': downloaded_songs,
-                    'failed_songs': failed_downloads,
-                    'cancelled': True
-                }
-            
-            if not entry:
-                continue
-                
-            try:
-                video_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry['id']}"
-                video_title = entry.get('title', f'Unknown Track {i}')
-                
-                logger.info(f"Downloading track {i}/{len(entries)}: {video_title}")
-                
-                # Update state and emit progress for current track
-                set_download_state('downloading', f'Downloading track {i}/{len(entries)}', i, len(entries), video_title, playlist_title)
-                socketio.emit('download_progress', {
-                    'status': 'downloading',
-                    'message': f'Downloading track {i}/{len(entries)}',
-                    'current_song': video_title,
-                    'current': i,
-                    'total': len(entries)
-                })
-                
-                
-                # Get detailed info for this specific video
-                ydl_opts_detail = {
-                    'quiet': True,
-                    'no_warnings': True
-                }
-                
-                with yt_dlp.YoutubeDL(ydl_opts_detail) as ydl_detail:
-                    video_info = ydl_detail.extract_info(video_url, download=False)
-                    duration = int(video_info.get('duration', 0))
-                    actual_title = video_info.get('title', video_title)
-                    
-                normalized_title = normalize_filename(actual_title)
-                
-                # Check if song already exists
-                mp3_file = os.path.join(MUSIC_DIR, f'{normalized_title}.mp3')
-                if os.path.exists(mp3_file):
-                    logger.info(f"Song already exists, skipping: {actual_title}")
-                    continue
-                
-                # Download the track
-                ydl_opts_download = {
-                    'format': 'bestaudio/best',
-                    'outtmpl': os.path.join(MUSIC_DIR, f'{normalized_title}.%(ext)s'),
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                    'quiet': True,
-                    'no_warnings': True
-                }
-                
-                with yt_dlp.YoutubeDL(ydl_opts_download) as ydl_download:
-                    ydl_download.download([video_url])
-                
-                if not os.path.exists(mp3_file):
-                    raise Exception(f"File was not created: {mp3_file}")
-                    
-                actual_filename = os.path.relpath(mp3_file, BASE_DIR)
-                
-                if duration == 0:
-                    duration = get_audio_duration(mp3_file)
-                
-                # Add song to database immediately after successful download
-                with session_scope() as db_session:
+        with app.app_context():
+            for event in job.events():
+                kind = event['type']
+                if kind == 'start':
+                    index = event.get('playlist_index') or index + 1
+                    total = max(event.get('n_entries') or total, index)
+                    title = event.get('title') or ''
+                    publish_download_state('downloading', f'Đang tải bài {index}/{total}', index, total, title,
+                                           percent=(index - 1) / total * 100)
+                elif kind == 'progress' and time.monotonic() - last_emit >= PROGRESS_EMIT_INTERVAL:
+                    last_emit = time.monotonic()
+                    publish_download_state('downloading', f'Đang tải bài {index}/{total}', index, total, title,
+                                           percent=((index - 1) + event['percent'] / 100) / total * 100)
+                elif kind == 'done':
                     try:
-                        # Check if song with same filename already exists
-                        existing_song = db_session.query(Song).filter_by(filename=actual_filename).first()
-                        if not existing_song:
-                            # Get max position and add 1
-                            max_position = db_session.query(db.func.max(Song.position)).scalar() or -1
-                            
-                            song = Song(
-                                title=actual_title,
-                                filename=actual_filename,
-                                source='youtube_playlist',
-                                duration=duration,
-                                position=max_position + 1
-                            )
-                            db_session.add(song)
-                            db_session.commit()
-                            logger.info(f"Added song to database immediately: {actual_title}")
-                            
-                            # Emit update to refresh UI
-                            socketio.emit('song_added', {
-                                'title': actual_title,
-                                'message': f'Added song: {actual_title}'
-                            })
+                        if add_downloaded_song(event, source):
+                            added += 1
                         else:
-                            logger.info(f"Song already exists in database: {actual_title}")
-                    except Exception as db_error:
-                        logger.error(f"Error adding song to database: {actual_title} - {db_error}")
-                
-                downloaded_songs.append({
-                    'title': actual_title,
-                    'filename': actual_filename,
-                    'duration': duration
-                })
-                
-                logger.info(f"Successfully downloaded: {actual_title}")
-                
-            except Exception as e:
-                logger.error(f"Error downloading track {i} ({video_title}): {e}")
-                failed_downloads.append({
-                    'title': video_title,
-                    'error': str(e)
-                })
-                continue
-        
-        result = {
-            'playlist_title': playlist_info.get('title', 'Unknown Playlist'),
-            'total_tracks': len(entries),
-            'downloaded_tracks': len(downloaded_songs),
-            'failed_tracks': len(failed_downloads),
-            'songs': downloaded_songs,
-            'failed_songs': failed_downloads
-        }
-        
-        logger.info(f"Completed playlist download: {result['downloaded_tracks']}/{result['total_tracks']} songs successful")
-        
-        # Clear state and emit completion event
-        clear_download_state()
-        socketio.emit('download_progress', {
-            'status': 'completed',
-            'message': f'Completed! Downloaded {result["downloaded_tracks"]}/{result["total_tracks"]} songs',
-            'current': result['total_tracks'],
-            'total': result['total_tracks'],
-            'downloaded': result['downloaded_tracks'],
-            'failed': result['failed_tracks']
-        })
-        
-        return result
-        
+                            existing += 1
+                    except Exception as e:
+                        # One bad row must not abort the rest of a playlist
+                        logger.error(f"Could not save downloaded song {event.get('filepath')}: {e}")
+                        failed_items.add(index)
+                elif kind == 'error':
+                    failed_items.add(index)
+                elif kind == 'finished':
+                    finish_download(event, added, existing, len(failed_items), total)
     except Exception as e:
-        logger.error(f"Error downloading playlist from {url}: {e}")
-        raise
+        logger.error(f"Download job failed for {job.url}: {e}")
+        publish_download_state('error', 'Lỗi khi tải nhạc, xem log máy chủ')
+    finally:
+        download_job = None
 
-def download_music(url):
-    """Main function to download music - handles both single tracks and playlists"""
-    if is_playlist_url(url):
-        return download_playlist(url)
+def finish_download(result, added, existing, failed, total):
+    summary = f'Đã thêm {added} bài'
+    if existing:
+        summary += f', {existing} bài đã có sẵn'
+    if failed:
+        summary += f', {failed} bài lỗi'
+    if result['cancelled']:
+        publish_download_state('cancelled', f'Đã hủy. {summary}', cancelled=True)
+    elif added or existing:
+        publish_download_state('completed', summary, total, total, percent=100)
     else:
-        return download_single_track(url)
+        publish_download_state('error', result['error'] or 'Không tải được bài nào')
+    logger.info(f"Download finished: {summary} (exit {result['returncode']})")
+
+def scheduled_ytdlp_update():
+    """Nightly yt-dlp upgrade; never competes with playback or a running download."""
+    global ytdlp_updating
+    if is_playing or download_job is not None or ytdlp_updating:
+        logger.info("Skipping scheduled yt-dlp update: player or download busy")
+        return
+    ytdlp_updating = True
+    try:
+        youtube_downloader.update_ytdlp()
+    except Exception as e:
+        logger.error(f"Scheduled yt-dlp update failed: {e}")
+    finally:
+        ytdlp_updating = False
 
 # =============================================================================
 # API Endpoints for React Frontend
@@ -1188,27 +1121,7 @@ def api_initial_state():
         disk_usage_info = get_disk_usage()
         
         with session_scope() as db_session:
-            # Get songs
-            songs = db_session.query(Song).order_by(
-                Song.position.asc(),
-                Song.last_played_at.is_(None).desc(),
-                Song.priority.desc(),
-                Song.last_played_at.asc()
-            ).all()
-            
-            songs_data = [{
-                'id': s.id,
-                'title': s.title,
-                'duration': s.duration,
-                'source': s.source,
-                'file_path': s.filename,
-                'position': s.position,
-                'category': s.category or 'music',
-                'delete_after_play': s.delete_after_play or False,
-                'last_played_at': s.last_played_at.isoformat() if s.last_played_at else None,
-                'priority': s.priority,
-                'created_at': s.created_at.isoformat() if s.created_at else None
-            } for s in songs]
+            songs_data = serialize_songs(db_session)
             
             # Get schedules
             schedules = db_session.query(Schedule).order_by(Schedule.time).all()
@@ -1217,8 +1130,9 @@ def api_initial_state():
                 'time': s.time,
                 'is_active': s.enabled,
                 'one_time': s.one_time,
-                'song_category': s.song_category or 'music',
                 'volume': s.volume if s.volume is not None else 100,
+                'playlist_id': s.playlist_id,
+                'play_all': s.play_all if s.play_all is not None else False,
                 'monday': s.monday,
                 'tuesday': s.tuesday,
                 'wednesday': s.wednesday,
@@ -1227,6 +1141,23 @@ def api_initial_state():
                 'saturday': s.saturday,
                 'sunday': s.sunday
             } for s in schedules]
+            
+            # Get holidays
+            holidays = db_session.query(Holiday).order_by(Holiday.date.asc()).all()
+            holidays_data = [{
+                'id': h.id,
+                'date': h.date,
+                'name': h.name
+            } for h in holidays]
+            
+            # Get playlists
+            playlists = db_session.query(Playlist).order_by(Playlist.name.asc()).all()
+            playlists_data = [{
+                'id': p.id,
+                'name': p.name,
+                'song_count': db_session.query(Song).filter_by(playlist_id=p.id).count(),
+                'created_at': p.created_at.isoformat() if p.created_at else None
+            } for p in playlists]
             
             # Get next schedule info
             now = datetime.now()
@@ -1248,10 +1179,10 @@ def api_initial_state():
             
             if valid_schedules:
                 next_schedule = valid_schedules[0]
-                # Filter songs by schedule's song_category
+                # Filter songs by schedule's playlist
                 song_query = db_session.query(Song)
-                if next_schedule.song_category and next_schedule.song_category != 'all':
-                    song_query = song_query.filter(Song.category == next_schedule.song_category)
+                if next_schedule.playlist_id:
+                    song_query = song_query.filter(Song.playlist_id == next_schedule.playlist_id)
                 next_song_to_play = song_query.order_by(
                     Song.position.asc(),
                     Song.last_played_at.is_(None).desc(),
@@ -1261,8 +1192,7 @@ def api_initial_state():
                 
                 next_schedule_info = {
                     'time': next_schedule.time,
-                    'song_title': next_song_to_play.title if next_song_to_play else 'Không có bài hát',
-                    'song_category': next_schedule.song_category or 'music'
+                    'song_title': next_song_to_play.title if next_song_to_play else 'Không có bài hát'
                 }
             
             # Get current song title
@@ -1277,6 +1207,8 @@ def api_initial_state():
                 'username': username,
                 'songs': songs_data,
                 'schedules': schedules_data,
+                'holidays': holidays_data,
+                'playlists': playlists_data,
                 'is_playing': is_playing,
                 'current_song_id': current_song_id,
                 'current_song_title': current_song_title,
@@ -1290,7 +1222,7 @@ def api_initial_state():
                     'used_formatted': f"{disk_usage_info.get('used_gb', 0):.2f} GB",
                     'total_formatted': f"{disk_usage_info.get('total_gb', 0):.2f} GB"
                 },
-                'ytdlp_version': get_ytdlp_version(),
+                'ytdlp_version': youtube_downloader.get_ytdlp_version(),
                 'settings': {
                     'shuffle_mode': shuffle_mode,
                     'fade_enabled': fade_enabled,
@@ -1334,24 +1266,10 @@ def api_login():
                 return jsonify({'error': 'Sai tên đăng nhập hoặc mật khẩu'}), 401
 
             if user.check_password(password):
-                session['user_id'] = user.id
-                session['username'] = user.username
-                session.permanent = True
-                
-                # Generate remember_token for persistent login
-                remember_token = user.generate_remember_token()
-                
+                start_user_session(user)
+                issue_refresh_token(db_session, user)
                 logger.info(f"Login success for user: '{username}'")
-                response = jsonify({'success': True, 'username': user.username})
-                # Set remember_token cookie (1 year)
-                response.set_cookie(
-                    'remember_token', 
-                    remember_token,
-                    max_age=365 * 24 * 3600,
-                    httponly=True,
-                    samesite='Lax'
-                )
-                return response
+                return jsonify({'success': True, 'username': user.username})
             else:
                 logger.warning(f"Login failed: wrong password for user '{username}'")
                 return jsonify({'error': 'Sai tên đăng nhập hoặc mật khẩu'}), 401
@@ -1362,22 +1280,15 @@ def api_login():
 
 @app.route('/api/logout')
 def api_logout():
-    """API logout endpoint"""
-    # Clear remember_token from DB
-    remember_token = request.cookies.get('remember_token')
-    if remember_token:
-        try:
-            with session_scope() as db_session:
-                user = db_session.query(User).filter_by(remember_token=remember_token).first()
-                if user:
-                    user.remember_token = None
-        except Exception as e:
-            logger.error(f"Error clearing remember_token: {e}")
-    
+    """API logout endpoint: signs out this device only"""
+    try:
+        revoke_refresh_token()
+    except Exception as e:
+        logger.error(f"Error revoking refresh token: {e}")
     session.clear()
-    response = jsonify({'success': True})
-    response.delete_cookie('remember_token')
-    return response
+    g.clear_refresh_cookie = True
+    g.clear_legacy_cookie = True
+    return jsonify({'success': True})
 
 # =============================================================================
 # Original Routes
@@ -1422,22 +1333,20 @@ def add_schedule():
         data = request.get_json()
         time = data.get('time')
         one_time = data.get('one_time', False)
-        song_category = data.get('song_category', 'music')
         volume = data.get('volume', 100)
+        playlist_id = data.get('playlist_id')  # Optional playlist assignment
+        play_all = data.get('play_all', False)  # Play all songs in playlist sequentially
         weekdays_selected = [day for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] if data.get(day)]
     else:
         time = request.form.get('time')
         one_time = request.form.get('one_time') == 'true'
-        song_category = request.form.get('song_category', 'music')
         volume = int(request.form.get('volume', 100))
+        playlist_id = request.form.get('playlist_id') or None
+        play_all = request.form.get('play_all') == 'true'
         weekdays_selected = request.form.getlist('weekdays')
     
     if not time:
         return jsonify({'success': False, 'message': 'Time is required'}), 400
-    
-    # Validate song_category
-    if song_category not in ['music', 'announcement', 'all']:
-        song_category = 'music'
     
     # Validate volume
     try:
@@ -1453,8 +1362,9 @@ def add_schedule():
         with session_scope() as session:
             schedule = Schedule(time=time)
             schedule.one_time = one_time
-            schedule.song_category = song_category
             schedule.volume = volume
+            schedule.playlist_id = int(playlist_id) if playlist_id else None
+            schedule.play_all = bool(play_all) if schedule.playlist_id else False
             schedule.monday = 'monday' in weekdays_selected
             schedule.tuesday = 'tuesday' in weekdays_selected
             schedule.wednesday = 'wednesday' in weekdays_selected
@@ -1471,8 +1381,9 @@ def add_schedule():
                 'time': schedule.time,
                 'is_active': schedule.enabled,
                 'one_time': schedule.one_time,
-                'song_category': schedule.song_category,
                 'volume': schedule.volume,
+                'playlist_id': schedule.playlist_id,
+                'play_all': schedule.play_all if schedule.play_all is not None else False,
                 'monday': schedule.monday,
                 'tuesday': schedule.tuesday,
                 'wednesday': schedule.wednesday,
@@ -1520,6 +1431,29 @@ def toggle_schedule(id):
         logger.error(f"Error toggling schedule {id}: {e}")
         return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
 
+@app.route('/toggle-schedule-play-all/<int:id>', methods=['POST'])
+@login_required
+@csrf.exempt
+def toggle_schedule_play_all(id):
+    try:
+        with session_scope() as session:
+            schedule = session.get(Schedule, id)
+            if schedule:
+                if not schedule.playlist_id:
+                    return jsonify({'success': False, 'message': 'Schedule has no playlist selected'}), 400
+                schedule.play_all = not (schedule.play_all or False)
+                result = {'success': True, 'play_all': schedule.play_all}
+            else:
+                return jsonify({'success': False, 'message': 'Schedule not found'}), 404
+
+        # Reload schedules to pick up the updated play_all arg
+        schedule_music()
+
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error toggling play_all for schedule {id}: {e}")
+        return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
+
 @app.route('/delete-schedule/<int:id>', methods=['GET', 'DELETE'])
 @login_required
 @csrf.exempt
@@ -1544,108 +1478,196 @@ def delete_schedule(id):
         logger.error(f"Error deleting schedule {id}: {e}")
         return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
 
+# Holiday API endpoints
+@app.route('/api/holidays', methods=['GET'])
+@login_required
+def get_holidays():
+    try:
+        with session_scope() as session:
+            holidays = session.query(Holiday).order_by(Holiday.date.asc()).all()
+            return jsonify([{
+                'id': h.id,
+                'date': h.date,
+                'name': h.name
+            } for h in holidays])
+    except Exception as e:
+        logger.error(f"Error getting holidays: {e}")
+        return jsonify([])
+
+@app.route('/api/holidays', methods=['POST'])
+@login_required
+@csrf.exempt
+def add_holiday():
+    data = request.get_json()
+    date = data.get('date')
+    name = data.get('name', '')
+    
+    if not date:
+        return jsonify({'success': False, 'message': 'Date is required'}), 400
+    
+    try:
+        # Validate date format
+        datetime.strptime(date, '%Y-%m-%d')
+        
+        with session_scope() as session:
+            existing = session.query(Holiday).filter_by(date=date).first()
+            if existing:
+                return jsonify({'success': False, 'message': 'Holiday already exists for this date'}), 400
+            
+            holiday = Holiday(date=date, name=name)
+            session.add(holiday)
+            session.flush()
+            
+            holiday_data = {
+                'id': holiday.id,
+                'date': holiday.date,
+                'name': holiday.name
+            }
+        
+        return jsonify(holiday_data)
+    except ValueError:
+        return jsonify({'success': False, 'message': 'Invalid date format. Use YYYY-MM-DD.'}), 400
+    except Exception as e:
+        logger.error(f"Error adding holiday: {e}")
+        return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
+
+@app.route('/api/holidays/<int:id>', methods=['DELETE'])
+@login_required
+@csrf.exempt
+def delete_holiday(id):
+    try:
+        with session_scope() as session:
+            holiday = session.get(Holiday, id)
+            if holiday:
+                session.delete(holiday)
+                return jsonify({'success': True})
+            else:
+                return jsonify({'success': False, 'message': 'Holiday not found'}), 404
+    except Exception as e:
+        logger.error(f"Error deleting holiday: {e}")
+        return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
+
+# Playlist API endpoints
+@app.route('/api/playlists', methods=['GET'])
+@login_required
+def get_playlists():
+    try:
+        with session_scope() as session:
+            playlists = session.query(Playlist).order_by(Playlist.name.asc()).all()
+            return jsonify([{
+                'id': p.id,
+                'name': p.name,
+                'song_count': session.query(Song).filter_by(playlist_id=p.id).count(),
+                'created_at': p.created_at.isoformat() if p.created_at else None
+            } for p in playlists])
+    except Exception as e:
+        logger.error(f"Error getting playlists: {e}")
+        return jsonify([])
+
+@app.route('/api/playlists', methods=['POST'])
+@login_required
+@csrf.exempt
+def create_playlist():
+    data = request.get_json()
+    name = data.get('name', '').strip()
+    
+    if not name:
+        return jsonify({'success': False, 'message': 'Name is required'}), 400
+    
+    try:
+        with session_scope() as session:
+            existing = session.query(Playlist).filter_by(name=name).first()
+            if existing:
+                return jsonify({'success': False, 'message': 'Playlist name already exists'}), 400
+            
+            playlist = Playlist(name=name)
+            session.add(playlist)
+            session.flush()
+            
+            playlist_data = {
+                'id': playlist.id,
+                'name': playlist.name,
+                'song_count': 0,
+                'created_at': playlist.created_at.isoformat() if playlist.created_at else None
+            }
+        
+        return jsonify(playlist_data)
+    except Exception as e:
+        logger.error(f"Error creating playlist: {e}")
+        return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
+
+@app.route('/api/playlists/<int:id>', methods=['DELETE'])
+@login_required
+@csrf.exempt
+def delete_playlist(id):
+    try:
+        with session_scope() as session:
+            playlist = session.get(Playlist, id)
+            if not playlist:
+                return jsonify({'success': False, 'message': 'Playlist not found'}), 404
+            
+            # Unassign songs from this playlist
+            session.query(Song).filter_by(playlist_id=id).update({'playlist_id': None})
+            # Unassign schedules from this playlist
+            session.query(Schedule).filter_by(playlist_id=id).update({'playlist_id': None})
+            session.delete(playlist)
+        
+        # Reload schedules since playlist assignments may have changed
+        schedule_music()
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Error deleting playlist: {e}")
+        return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
+
+@app.route('/api/songs/<int:song_id>/playlist', methods=['POST'])
+@login_required
+@csrf.exempt
+def assign_song_to_playlist(song_id):
+    data = request.get_json()
+    playlist_id = data.get('playlist_id')  # None to unassign
+    
+    try:
+        with session_scope() as session:
+            song = session.get(Song, song_id)
+            if not song:
+                return jsonify({'success': False, 'message': 'Song not found'}), 404
+            
+            if playlist_id is not None:
+                playlist = session.get(Playlist, playlist_id)
+                if not playlist:
+                    return jsonify({'success': False, 'message': 'Playlist not found'}), 404
+            
+            song.playlist_id = playlist_id
+        
+        return jsonify({'success': True, 'playlist_id': playlist_id})
+    except Exception as e:
+        logger.error(f"Error assigning song to playlist: {e}")
+        return jsonify({'success': False, 'message': 'An internal error occurred'}), 500
+
 @app.route('/add-music', methods=['POST'])
 @login_required
 @csrf.exempt
 def add_music():
-    # Support both form data and JSON
-    if request.is_json:
-        data = request.get_json()
-        url = data.get('url')
-    else:
-        url = request.form.get('url')
-    
-    if not url:
-        return jsonify({'success': False, 'message': 'No URL provided'}), 400
+    """Queue a YouTube download. Progress and results arrive over Socket.IO."""
+    global download_job
+    data = request.get_json(silent=True) or request.form
+    url = (data.get('url') or '').strip()
+    if not youtube_downloader.is_allowed_url(url):
+        return jsonify({'success': False, 'message': 'Chỉ hỗ trợ link YouTube'}), 400
+    if download_job is not None:
+        return jsonify({'success': False, 'message': 'Đang có bài đang tải, vui lòng chờ'}), 409
+    if ytdlp_updating:
+        return jsonify({'success': False, 'message': 'Đang cập nhật yt-dlp, thử lại sau ít phút'}), 409
 
+    download_job = youtube_downloader.DownloadJob(url)
     try:
-        # Check if it's a playlist to start progress tracking
-        if is_playlist_url(url):
-            socketio.emit('download_progress', {
-                'status': 'starting',
-                'message': 'Starting playlist processing...',
-                'current': 0,
-                'total': 0
-            })
-        
-        music_info = download_music(url)
-        
-        # Handle playlist response
-        if 'songs' in music_info:  # This is a playlist
-            playlist_title = music_info['playlist_title']
-            downloaded_songs = music_info['songs']
-            failed_songs = music_info['failed_songs']
-            cancelled = music_info.get('cancelled', False)
-            
-            if cancelled:
-                return jsonify({
-                    'success': True,
-                    'message': f"Playlist download '{playlist_title}' was cancelled. Downloaded {len(downloaded_songs)} songs.",
-                    'cancelled': True
-                })
-            
-            if not downloaded_songs:
-                error_msg = f"Unable to download any songs from playlist '{playlist_title}'"
-                if failed_songs:
-                    error_msg += f". Error: {len(failed_songs)} songs failed"
-                return jsonify({'success': False, 'message': error_msg}), 400
-            
-            # Songs are already added to database during download process
-            # Just count them for response
-            added_songs = [song['title'] for song in downloaded_songs]
-            skipped_songs = []
-            
-            logger.info(f"Playlist processing completed: {len(added_songs)} songs were added during download")
-            
-            # Create response message
-            message_parts = []
-            if added_songs:
-                message_parts.append(f"Added {len(added_songs)} songs from playlist '{playlist_title}'")
-            if skipped_songs:
-                message_parts.append(f"{len(skipped_songs)} songs already exist in playlist")
-            if failed_songs:
-                message_parts.append(f"{len(failed_songs)} songs failed to download")
-            
-            response_message = ". ".join(message_parts)
-            
-            return jsonify({
-                'success': True,
-                'message': response_message,
-                'playlist_info': {
-                    'playlist_title': playlist_title,
-                    'total_tracks': music_info['total_tracks'],
-                    'added_tracks': len(added_songs),
-                    'skipped_tracks': len(skipped_songs),
-                    'failed_tracks': len(failed_songs)
-                }
-            })
-            
-        else:  # This is a single track
-            if not music_info['duration']:
-                return jsonify({'success': False, 'message': 'Could not determine video duration'})
-                
-            with session_scope() as session:
-                # Check if song with same filename already exists
-                existing_song = session.query(Song).filter_by(filename=music_info['filename']).first()
-                if existing_song:
-                    return jsonify({'success': False, 'message': 'This song already exists in the playlist'}), 400
-
-                # Get max position and add 1
-                max_position = session.query(db.func.max(Song.position)).scalar() or -1
-                
-                song = Song(
-                    title=music_info['title'],
-                    filename=music_info['filename'],
-                    source='youtube',
-                    duration=music_info['duration'],
-                    position=max_position + 1
-                )
-                session.add(song)
-                return jsonify({'success': True, 'message': 'Music added successfully'})
-                
+        publish_download_state('starting', 'Đang phân tích link...')
+        socketio.start_background_task(run_download_job, download_job)
     except Exception as e:
-        logger.error(f"Error adding music from URL {url}: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        download_job = None
+        logger.error(f"Could not start download job: {e}")
+        return jsonify({'success': False, 'message': 'Không thể bắt đầu tải'}), 500
+    return jsonify({'success': True, 'queued': True, 'message': 'Đã bắt đầu tải'}), 202
 
 @app.route('/upload-music', methods=['POST'])
 @csrf.exempt
@@ -1701,22 +1723,20 @@ def upload_music():
 @login_required
 @csrf.exempt
 def update_ytdlp_manual():
-    """Manual update yt-dlp and reload the module"""
+    """Upgrade yt-dlp. Downloads run in a child process, so no restart is needed."""
+    global ytdlp_updating
+    if download_job is not None or ytdlp_updating:
+        return jsonify({'success': False, 'message': 'Đang tải nhạc hoặc đang cập nhật, hãy thử lại sau'}), 409
+    ytdlp_updating = True
     try:
         logger.info("Manual yt-dlp update requested")
-        update_ytdlp()
-        
-        # Reload yt_dlp module to use new version without restarting server
-        import importlib
-        import yt_dlp
-        importlib.reload(yt_dlp)
-        logger.info("yt-dlp module reloaded successfully")
-        
-        new_version = get_ytdlp_version()
+        new_version = youtube_downloader.update_ytdlp()
         return jsonify({'success': True, 'message': 'yt-dlp updated successfully', 'version': new_version})
     except Exception as e:
         logger.error(f"Error manually updating yt-dlp: {e}")
         return jsonify({'success': False, 'message': 'Failed to update yt-dlp'}), 500
+    finally:
+        ytdlp_updating = False
 
 
 @app.route('/play/<int:id>', methods=['GET', 'POST'])
@@ -1944,38 +1964,6 @@ def delete_song(id):
         logger.error(f"Error deleting song {id}: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
-@app.route('/update-song-category/<int:id>', methods=['POST'])
-@login_required
-@csrf.exempt
-def update_song_category(id):
-    """Update song category (music or announcement)"""
-    try:
-        data = request.get_json()
-        category = data.get('category', 'music')
-        
-        if category not in ['music', 'announcement']:
-            return jsonify({'success': False, 'message': 'Invalid category. Must be "music" or "announcement"'}), 400
-        
-        with session_scope() as session:
-            song = session.get(Song, id)
-            if not song:
-                return jsonify({'success': False, 'message': 'Song not found'}), 404
-            
-            song.category = category
-            logger.info(f"Updated song {id} category to {category}")
-            
-            return jsonify({
-                'success': True,
-                'song': {
-                    'id': song.id,
-                    'title': song.title,
-                    'category': song.category
-                }
-            })
-    except Exception as e:
-        logger.error(f"Error updating song category {id}: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
-
 @app.route('/toggle-delete-after-play/<int:id>', methods=['POST'])
 @login_required
 @csrf.exempt
@@ -2155,13 +2143,12 @@ def handle_sort_unplayed_first():
                         'source': song.source,
                         'duration': song.duration,
                         'position': song.position,
-                        'category': song.category or 'music',
                         'delete_after_play': song.delete_after_play or False,
+                        'playlist_id': song.playlist_id,
                         'last_played_at': song.last_played_at.isoformat() if song.last_played_at else None,
                         'priority': song.priority,
                         'created_at': song.created_at.isoformat() if song.created_at else None,
                         'file_path': song.filename,
-                        'duration_formatted': f"{song.duration//60}:{song.duration%60:02d}"
                     })
                 
                 # Emit success with new song order
@@ -2244,8 +2231,8 @@ def login():
             user = db_session.query(User).filter_by(username=username).first()
             
             if user and user.check_password(password):
-                session['user_id'] = user.id
-                session['username'] = user.username
+                start_user_session(user)
+                issue_refresh_token(db_session, user)
                 
                 # Redirect to requested page or default to index
                 next_page = request.args.get('next', url_for('index'))
@@ -2258,7 +2245,12 @@ def login():
 @app.route('/logout')
 def logout():
     """Logout route"""
+    try:
+        revoke_refresh_token()
+    except Exception as e:
+        logger.error(f"Error revoking refresh token: {e}")
     session.clear()
+    g.clear_refresh_cookie = True
     return redirect(url_for('login'))
 
 # =============================================================================

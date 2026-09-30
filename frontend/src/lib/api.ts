@@ -42,8 +42,6 @@ export const musicApi = {
   resetOrder: () => api.post('/reset-playlist-order'),
   setVolume: (volume: number) => api.post('/set-volume', { volume }),
   cancelDownload: () => api.post('/cancel-download'),
-  updateCategory: (songId: number, category: 'music' | 'announcement') =>
-    api.post(`/update-song-category/${songId}`, { category }),
   toggleDeleteAfterPlay: (songId: number) =>
     api.post(`/toggle-delete-after-play/${songId}`),
 };
@@ -52,8 +50,9 @@ export const scheduleApi = {
   add: (data: {
     time: string;
     one_time?: boolean;
-    song_category?: 'music' | 'announcement' | 'all';
     volume?: number;
+    playlist_id?: number | null;
+    play_all?: boolean;
     monday: boolean;
     tuesday: boolean;
     wednesday: boolean;
@@ -63,7 +62,22 @@ export const scheduleApi = {
     sunday: boolean;
   }) => api.post('/add-schedule', data),
   toggle: (scheduleId: number) => api.post(`/toggle-schedule/${scheduleId}`),
+  togglePlayAll: (scheduleId: number) => api.post(`/toggle-schedule-play-all/${scheduleId}`),
   delete: (scheduleId: number) => api.delete(`/delete-schedule/${scheduleId}`),
+};
+
+export const holidayApi = {
+  getAll: () => api.get('/api/holidays'),
+  add: (date: string, name: string) => api.post('/api/holidays', { date, name }),
+  delete: (id: number) => api.delete(`/api/holidays/${id}`),
+};
+
+export const playlistApi = {
+  getAll: () => api.get('/api/playlists'),
+  create: (name: string) => api.post('/api/playlists', { name }),
+  delete: (id: number) => api.delete(`/api/playlists/${id}`),
+  assignSong: (songId: number, playlistId: number | null) =>
+    api.post(`/api/songs/${songId}/playlist`, { playlist_id: playlistId }),
 };
 
 export const systemApi = {

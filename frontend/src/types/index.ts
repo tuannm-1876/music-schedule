@@ -1,6 +1,3 @@
-// Song category type
-export type SongCategory = 'music' | 'announcement';
-
 // Song type
 export interface Song {
   id: number;
@@ -9,15 +6,12 @@ export interface Song {
   source: string;
   file_path: string;
   position: number;
-  category: SongCategory;
   delete_after_play: boolean;
+  playlist_id: number | null;
   last_played_at: string | null;
   priority: number;
   created_at: string;
 }
-
-// Schedule song category type (includes 'all' option)
-export type ScheduleSongCategory = 'music' | 'announcement' | 'all';
 
 // Schedule type
 export interface Schedule {
@@ -25,8 +19,9 @@ export interface Schedule {
   time: string;
   is_active: boolean;
   one_time: boolean;
-  song_category: ScheduleSongCategory;
   volume: number;
+  playlist_id: number | null;
+  play_all: boolean;
   monday: boolean;
   tuesday: boolean;
   wednesday: boolean;
@@ -34,6 +29,21 @@ export interface Schedule {
   friday: boolean;
   saturday: boolean;
   sunday: boolean;
+}
+
+// Holiday type
+export interface Holiday {
+  id: number;
+  date: string;
+  name: string;
+}
+
+// Playlist type
+export interface Playlist {
+  id: number;
+  name: string;
+  song_count: number;
+  created_at: string | null;
 }
 
 // Playback state from server
@@ -52,6 +62,7 @@ export interface DownloadState {
   progress: number;
   current_file: string;
   status: string;
+  message: string;
   error: string | null;
   playlist_progress?: {
     current: number;
@@ -79,6 +90,8 @@ export interface PlaybackSettings {
 export interface InitialState {
   songs: Song[];
   schedules: Schedule[];
+  holidays: Holiday[];
+  playlists: Playlist[];
   is_playing: boolean;
   current_song_id: number | null;
   current_song_title: string | null;

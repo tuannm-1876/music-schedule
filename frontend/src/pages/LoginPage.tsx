@@ -29,7 +29,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-background via-background to-primary/5">
+    <div className="min-h-screen flex flex-col items-center justify-center gap-6 px-4 py-12 bg-gradient-to-br from-background via-background to-primary/5">
       {/* Background decoration */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-primary/10 rounded-full blur-3xl" />
@@ -40,7 +40,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
-        className="w-full max-w-md relative"
+        className="w-full max-w-sm relative"
       >
         <Card className="p-8 backdrop-blur-xl bg-card/80 border-border/50 shadow-2xl">
           {/* Logo */}
@@ -49,22 +49,22 @@ export function LoginPage({ onLogin }: LoginPageProps) {
               initial={{ scale: 0 }}
               animate={{ scale: 1 }}
               transition={{ type: 'spring', stiffness: 200, delay: 0.2 }}
-              className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center mb-4 shadow-lg"
+              className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center mb-4 shadow-lg shadow-primary/30"
             >
               <Music className="w-10 h-10 text-white" />
             </motion.div>
             <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-purple-600 bg-clip-text text-transparent">
               Music Scheduler
             </h1>
-            <p className="text-muted-foreground text-sm mt-1">
+            <p className="text-muted-foreground text-sm mt-2">
               Đăng nhập để tiếp tục
             </p>
           </div>
 
           {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="space-y-2">
-              <label htmlFor="username" className="text-sm font-medium">
+          <form onSubmit={handleSubmit} className="space-y-5">
+            <div className="space-y-1.5">
+              <label htmlFor="username" className="text-sm font-medium block">
                 Tên đăng nhập
               </label>
               <Input
@@ -78,8 +78,8 @@ export function LoginPage({ onLogin }: LoginPageProps) {
               />
             </div>
 
-            <div className="space-y-2">
-              <label htmlFor="password" className="text-sm font-medium">
+            <div className="space-y-1.5">
+              <label htmlFor="password" className="text-sm font-medium block">
                 Mật khẩu
               </label>
               <div className="relative">
@@ -118,7 +118,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
 
             <Button
               type="submit"
-              className="w-full h-11"
+              className="w-full h-11 mt-2"
               disabled={isLoading}
             >
               {isLoading ? (
@@ -132,11 +132,16 @@ export function LoginPage({ onLogin }: LoginPageProps) {
             </Button>
           </form>
         </Card>
-
-        <p className="text-center text-sm text-muted-foreground mt-6">
-          Music Scheduler v2.0 • Built with ❤️
-        </p>
       </motion.div>
+
+      <motion.p
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.4 }}
+        className="relative text-center text-sm text-muted-foreground"
+      >
+        Music Scheduler v2.0 • Built with ❤️
+      </motion.p>
     </div>
   );
 }

@@ -9,23 +9,23 @@ import {
   Upload,
   Clock,
   ArrowUpDown,
-  Megaphone,
   ChevronDown,
-  Trash
+  Trash,
+  ListMusic
 } from 'lucide-react';
 import { useSocket } from '@/contexts/SocketContext';
 import { useToast } from '@/contexts/ToastContext';
 import { Button, Card } from '@/components/ui';
-import { musicApi } from '@/lib/api';
+import { musicApi, playlistApi } from '@/lib/api';
 import { formatDuration } from '@/lib/utils';
-import type { Song, SongCategory } from '@/types';
+import type { Song } from '@/types';
 
 export function Playlist() {
-  const { songs, setSongs, playbackState, sortUnplayedFirst } = useSocket();
+  const { songs, setSongs, playbackState, sortUnplayedFirst, playlists } = useSocket();
   const { addToast } = useToast();
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [playingId, setPlayingId] = useState<number | null>(null);
-  const [filterCategory, setFilterCategory] = useState<SongCategory | 'all'>('all');
+  const [filterPlaylist, setFilterPlaylist] = useState<number | 'all'>('all');
 
   const handlePlay = async (songId: number) => {
     setPlayingId(songId);
@@ -53,19 +53,6 @@ export function Playlist() {
     }
   };
 
-  const handleCategoryChange = async (songId: number, newCategory: SongCategory) => {
-    try {
-      await musicApi.updateCategory(songId, newCategory);
-      setSongs((prev) =>
-        prev.map((s) => (s.id === songId ? { ...s, category: newCategory } : s))
-      );
-      addToast('success', `Đã chuyển sang ${newCategory === 'music' ? 'Nhạc' : 'Truyền thông'}`);
-    } catch (error) {
-      console.error('Failed to update category:', error);
-      addToast('error', 'Không thể cập nhật loại bài');
-    }
-  };
-
   const handleToggleDeleteAfterPlay = async (songId: number) => {
     try {
       const response = await musicApi.toggleDeleteAfterPlay(songId);
@@ -90,6 +77,21 @@ export function Playlist() {
     }
   };
 
+  const handlePlaylistAssign = async (songId: number, playlistIdVal: number | null) => {
+    try {
+      await playlistApi.assignSong(songId, playlistIdVal);
+      setSongs((prev) =>
+        prev.map((s) => (s.id === songId ? { ...s, playlist_id: playlistIdVal } : s))
+      );
+      const playlistName = playlistIdVal
+        ? playlists.find(p => p.id === playlistIdVal)?.name || 'Playlist'
+        : 'Chung';
+      addToast('success', `Đã gán vào ${playlistName}`);
+    } catch {
+      addToast('error', 'Không thể gán playlist');
+    }
+  };
+
   const handleSortUnplayed = () => {
     sortUnplayedFirst();
     addToast('info', 'Đang sắp xếp playlist...');
@@ -102,14 +104,14 @@ export function Playlist() {
     return <Upload className="w-3 h-3 text-blue-500" />;
   };
 
-  // Filter songs by category
-  const filteredSongs = filterCategory === 'all' 
-    ? songs 
-    : songs.filter(s => (s.category || 'music') === filterCategory);
-
-  // Count by category
-  const musicCount = songs.filter(s => (s.category || 'music') === 'music').length;
-  const announcementCount = songs.filter(s => s.category === 'announcement').length;
+  // Filter songs by playlist
+  let filteredSongs = songs;
+  
+  if (filterPlaylist !== 'all') {
+    filteredSongs = filteredSongs.filter(s => 
+      filterPlaylist === 0 ? !s.playlist_id : s.playlist_id === filterPlaylist
+    );
+  }
 
   return (
     <Card className="overflow-hidden">
@@ -139,40 +141,46 @@ export function Playlist() {
           </Button>
         </div>
 
-        {/* Category Filter Tabs */}
-        <div className="flex gap-2">
+        {/* Playlist Filter Tabs */}
+        <div className="flex gap-2 flex-wrap">
           <button
-            onClick={() => setFilterCategory('all')}
-            className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
-              filterCategory === 'all'
+            onClick={() => setFilterPlaylist('all')}
+            className={`px-3 py-1.5 text-sm rounded-lg transition-colors flex items-center gap-1.5 ${
+              filterPlaylist === 'all'
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-muted hover:bg-muted/80'
             }`}
           >
+            <ListMusic className="w-3.5 h-3.5" />
             Tất cả ({songs.length})
           </button>
-          <button
-            onClick={() => setFilterCategory('music')}
-            className={`px-3 py-1.5 text-sm rounded-lg transition-colors flex items-center gap-1.5 ${
-              filterCategory === 'music'
-                ? 'bg-blue-500 text-white'
-                : 'bg-muted hover:bg-muted/80'
-            }`}
-          >
-            <Music className="w-3.5 h-3.5" />
-            Nhạc ({musicCount})
-          </button>
-          <button
-            onClick={() => setFilterCategory('announcement')}
-            className={`px-3 py-1.5 text-sm rounded-lg transition-colors flex items-center gap-1.5 ${
-              filterCategory === 'announcement'
-                ? 'bg-orange-500 text-white'
-                : 'bg-muted hover:bg-muted/80'
-            }`}
-          >
-            <Megaphone className="w-3.5 h-3.5" />
-            Truyền thông ({announcementCount})
-          </button>
+          {playlists.length > 0 && (
+            <>
+              <button
+                onClick={() => setFilterPlaylist(0)}
+                className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                  filterPlaylist === 0
+                    ? 'bg-gray-500 text-white'
+                    : 'bg-muted hover:bg-muted/80'
+                }`}
+              >
+                Chưa gán ({songs.filter(s => !s.playlist_id).length})
+              </button>
+              {playlists.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => setFilterPlaylist(p.id)}
+                  className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                    filterPlaylist === p.id
+                      ? 'bg-green-500 text-white'
+                      : 'bg-muted hover:bg-muted/80'
+                  }`}
+                >
+                  {p.name} ({songs.filter(s => s.playlist_id === p.id).length})
+                </button>
+              ))}
+            </>
+          )}
         </div>
       </div>
 
@@ -203,8 +211,9 @@ export function Playlist() {
                   isDeleting={deletingId === song.id}
                   onPlay={() => handlePlay(song.id)}
                   onDelete={() => handleDelete(song.id)}
-                  onCategoryChange={(cat) => handleCategoryChange(song.id, cat)}
                   onToggleDeleteAfterPlay={() => handleToggleDeleteAfterPlay(song.id)}
+                  onPlaylistAssign={(pId) => handlePlaylistAssign(song.id, pId)}
+                  playlists={playlists}
                   getSourceIcon={getSourceIcon}
                   index={index}
                 />
@@ -224,8 +233,9 @@ interface SongItemProps {
   isDeleting: boolean;
   onPlay: () => void;
   onDelete: () => void;
-  onCategoryChange: (category: SongCategory) => void;
   onToggleDeleteAfterPlay: () => void;
+  onPlaylistAssign: (playlistId: number | null) => void;
+  playlists: { id: number; name: string }[];
   getSourceIcon: (source: string) => React.ReactNode;
   index: number;
 }
@@ -237,22 +247,15 @@ function SongItem({
   isDeleting,
   onPlay,
   onDelete,
-  onCategoryChange,
   onToggleDeleteAfterPlay,
+  onPlaylistAssign,
+  playlists,
   getSourceIcon,
   index,
 }: SongItemProps) {
   const [showActions, setShowActions] = useState(false);
-  const [showCategoryMenu, setShowCategoryMenu] = useState(false);
+  const [showPlaylistMenu, setShowPlaylistMenu] = useState(false);
   const dragControls = useDragControls();
-
-  const categoryConfig = {
-    music: { label: 'Nhạc', color: 'bg-blue-500/20 text-blue-600 dark:text-blue-400', icon: Music },
-    announcement: { label: 'Truyền thông', color: 'bg-orange-500/20 text-orange-600 dark:text-orange-400', icon: Megaphone },
-  };
-
-  const currentCategory = song.category || 'music';
-  const config = categoryConfig[currentCategory];
 
   return (
     <Reorder.Item
@@ -345,55 +348,67 @@ function SongItem({
         </div>
       </div>
 
-      {/* Category Badge with Dropdown */}
-      <div className="relative shrink-0">
-        <button
-          onClick={() => setShowCategoryMenu(!showCategoryMenu)}
-          className={`flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-md text-xs font-medium transition-colors ${config.color}`}
-        >
-          <config.icon className="w-3 h-3" />
-          <span className="hidden sm:inline">{config.label}</span>
-          <ChevronDown className="w-3 h-3" />
-        </button>
+      {/* Playlist Badge with Dropdown */}
+      {playlists.length > 0 && (
+        <div className="relative shrink-0">
+          <button
+            onClick={() => setShowPlaylistMenu(!showPlaylistMenu)}
+            className={`flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+              song.playlist_id
+                ? 'bg-green-500/20 text-green-600 dark:text-green-400'
+                : 'bg-muted text-muted-foreground'
+            }`}
+          >
+            <ListMusic className="w-3 h-3" />
+            <span className="hidden sm:inline">
+              {song.playlist_id
+                ? playlists.find(p => p.id === song.playlist_id)?.name || 'Playlist'
+                : 'Chung'}
+            </span>
+            <ChevronDown className="w-3 h-3" />
+          </button>
 
-        <AnimatePresence>
-          {showCategoryMenu && (
-            <motion.div
-              initial={{ opacity: 0, y: -5, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -5, scale: 0.95 }}
-              className="absolute right-0 top-full mt-1 z-50 bg-card border border-border rounded-lg shadow-lg overflow-hidden min-w-[140px]"
-            >
-              <button
-                onClick={() => {
-                  onCategoryChange('music');
-                  setShowCategoryMenu(false);
-                }}
-                className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors ${
-                  currentCategory === 'music' ? 'bg-primary/10' : ''
-                }`}
+          <AnimatePresence>
+            {showPlaylistMenu && (
+              <motion.div
+                initial={{ opacity: 0, y: -5, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -5, scale: 0.95 }}
+                className="absolute right-0 top-full mt-1 z-50 bg-card border border-border rounded-lg shadow-lg overflow-hidden min-w-[140px]"
               >
-                <Music className="w-4 h-4 text-blue-500" />
-                Nhạc
-                {currentCategory === 'music' && <span className="ml-auto text-primary">✓</span>}
-              </button>
-              <button
-                onClick={() => {
-                  onCategoryChange('announcement');
-                  setShowCategoryMenu(false);
-                }}
-                className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors ${
-                  currentCategory === 'announcement' ? 'bg-primary/10' : ''
-                }`}
-              >
-                <Megaphone className="w-4 h-4 text-orange-500" />
-                Truyền thông
-                {currentCategory === 'announcement' && <span className="ml-auto text-primary">✓</span>}
-              </button>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+                <button
+                  onClick={() => {
+                    onPlaylistAssign(null);
+                    setShowPlaylistMenu(false);
+                  }}
+                  className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors ${
+                    !song.playlist_id ? 'bg-primary/10' : ''
+                  }`}
+                >
+                  Chung
+                  {!song.playlist_id && <span className="ml-auto text-primary">✓</span>}
+                </button>
+                {playlists.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => {
+                      onPlaylistAssign(p.id);
+                      setShowPlaylistMenu(false);
+                    }}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors ${
+                      song.playlist_id === p.id ? 'bg-primary/10' : ''
+                    }`}
+                  >
+                    <ListMusic className="w-4 h-4 text-green-500" />
+                    {p.name}
+                    {song.playlist_id === p.id && <span className="ml-auto text-primary">✓</span>}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
 
       {/* Delete After Play Badge - Hidden on mobile, show icon only */}
       {song.delete_after_play && (

@@ -1,6 +1,6 @@
 flask==2.3.3
 werkzeug==2.3.7
-yt-dlp
+yt-dlp[default]  # [default] pulls yt-dlp-ejs, required for YouTube since 2025.11
 APScheduler==3.9.1
 python-dotenv==0.19.0
 Flask-SQLAlchemy==3.1.1

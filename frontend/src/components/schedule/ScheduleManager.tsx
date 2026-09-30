@@ -9,32 +9,33 @@ import {
   ChevronUp,
   Loader2,
   Zap,
-  Music,
-  Megaphone,
   ListMusic,
-  Volume2
+  Volume2,
+  PlaySquare
 } from 'lucide-react';
 import { useSocket } from '@/contexts/SocketContext';
 import { useToast } from '@/contexts/ToastContext';
 import { Button, Card, Input, Switch, Slider } from '@/components/ui';
 import { scheduleApi } from '@/lib/api';
 import { getWeekdayLabel, WEEKDAYS } from '@/lib/utils';
-import type { Schedule, ScheduleSongCategory } from '@/types';
+import type { Schedule } from '@/types';
 
 export function ScheduleManager() {
-  const { schedules, setSchedules } = useSocket();
+  const { schedules, setSchedules, playlists } = useSocket();
   const { addToast } = useToast();
   const [isExpanded, setIsExpanded] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
   const [togglingId, setTogglingId] = useState<number | null>(null);
+  const [togglingPlayAllId, setTogglingPlayAllId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
   // Form state
   const [time, setTime] = useState('08:00');
   const [oneTime, setOneTime] = useState(false);
-  const [songCategory, setSongCategory] = useState<ScheduleSongCategory>('music');
   const [volume, setVolume] = useState(100);
+  const [playlistId, setPlaylistId] = useState<number | null>(null);
+  const [playAll, setPlayAll] = useState(false);
   const [selectedDays, setSelectedDays] = useState<Record<string, boolean>>({
     monday: true,
     tuesday: true,
@@ -44,16 +45,6 @@ export function ScheduleManager() {
     saturday: false,
     sunday: false,
   });
-
-  const categoryOptions = [
-    { value: 'music' as const, label: 'Nhạc', icon: Music, color: 'text-blue-500' },
-    { value: 'announcement' as const, label: 'Truyền thông', icon: Megaphone, color: 'text-orange-500' },
-    { value: 'all' as const, label: 'Tất cả', icon: ListMusic, color: 'text-purple-500' },
-  ];
-
-  const getCategoryConfig = (cat: ScheduleSongCategory) => {
-    return categoryOptions.find(c => c.value === cat) || categoryOptions[0];
-  };
 
   const handleAddSchedule = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,8 +60,9 @@ export function ScheduleManager() {
       const response = await scheduleApi.add({
         time,
         one_time: oneTime,
-        song_category: songCategory,
         volume,
+        playlist_id: playlistId,
+        play_all: playAll,
         monday: selectedDays.monday,
         tuesday: selectedDays.tuesday,
         wednesday: selectedDays.wednesday,
@@ -87,8 +79,9 @@ export function ScheduleManager() {
       // Reset form
       setTime('08:00');
       setOneTime(false);
-      setSongCategory('music');
       setVolume(100);
+      setPlaylistId(null);
+      setPlayAll(false);
       setSelectedDays({
         monday: true,
         tuesday: true,
@@ -137,6 +130,23 @@ export function ScheduleManager() {
     }
   };
 
+  const handleTogglePlayAll = async (scheduleId: number) => {
+    setTogglingPlayAllId(scheduleId);
+    try {
+      const response = await scheduleApi.togglePlayAll(scheduleId);
+      setSchedules((prev) =>
+        prev.map((s) =>
+          s.id === scheduleId ? { ...s, play_all: response.data.play_all } : s
+        )
+      );
+    } catch (error) {
+      console.error('Failed to toggle play_all:', error);
+      addToast('error', 'Không thể thay đổi chế độ phát');
+    } finally {
+      setTogglingPlayAllId(null);
+    }
+  };
+
   const toggleDay = (day: string) => {
     setSelectedDays((prev) => ({ ...prev, [day]: !prev[day] }));
   };
@@ -176,81 +186,131 @@ export function ScheduleManager() {
             exit={{ height: 0 }}
             className="overflow-hidden"
           >
-            <div className="px-4 pb-4 space-y-3">
+            <div className="px-4 pb-4 space-y-2">
               {/* Schedule List */}
               {schedules.map((schedule) => {
-                const catConfig = getCategoryConfig(schedule.song_category || 'music');
                 return (
                 <motion.div
                   key={schedule.id}
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className={`p-3 rounded-lg border transition-colors ${
+                  className={`rounded-xl border overflow-hidden transition-all duration-200 ${
                     schedule.is_active
-                      ? 'bg-primary/5 border-primary/20'
-                      : 'bg-muted/50 border-border'
+                      ? 'border-primary/25 shadow-sm shadow-primary/10'
+                      : 'border-border opacity-70'
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center gap-2">
-                        <Clock className="w-4 h-4 text-muted-foreground" />
-                        <span className="font-mono font-semibold text-lg">
-                          {schedule.time}
-                        </span>
-                        {schedule.one_time && (
-                          <span className="px-2 py-0.5 text-xs rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                            <Zap className="w-3 h-3" />
-                            Một lần
+                  {/* Left accent bar + content */}
+                  <div className="flex">
+                    {/* Accent bar */}
+                    <div className={`w-1 shrink-0 ${schedule.is_active ? 'bg-primary' : 'bg-muted-foreground/30'}`} />
+
+                    {/* Main content */}
+                    <div className="flex-1 p-3 space-y-2">
+                      {/* Top row: time + badges + controls */}
+                      <div className="flex items-center justify-between gap-2">
+                        {/* Left: time + badges */}
+                        <div className="flex items-center gap-2 flex-wrap min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                            <span className={`font-mono font-bold text-xl leading-none ${
+                              schedule.is_active ? 'text-foreground' : 'text-muted-foreground'
+                            }`}>
+                              {schedule.time}
+                            </span>
+                          </div>
+
+                          {schedule.one_time && (
+                            <span className="px-2 py-0.5 text-xs rounded-full bg-amber-500/20 text-amber-500 dark:text-amber-400 border border-amber-500/20 flex items-center gap-1 shrink-0">
+                              <Zap className="w-3 h-3" />
+                              Một lần
+                            </span>
+                          )}
+
+                          {schedule.playlist_id ? (
+                            <span className="px-2 py-0.5 text-xs rounded-full bg-orange-500/15 text-orange-600 dark:text-orange-400 border border-orange-500/20 flex items-center gap-1 shrink-0">
+                              <ListMusic className="w-3 h-3" />
+                              {playlists.find(p => p.id === schedule.playlist_id)?.name || 'Playlist'}
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 text-xs rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/20 flex items-center gap-1 shrink-0">
+                              <ListMusic className="w-3 h-3" />
+                              Nhạc
+                            </span>
+                          )}
+
+                          {schedule.play_all && schedule.playlist_id && (
+                            <span className="px-2 py-0.5 text-xs rounded-full bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/20 flex items-center gap-1 shrink-0">
+                              <PlaySquare className="w-3 h-3" />
+                              Toàn bộ
+                            </span>
+                          )}
+
+                          <span className="px-2 py-0.5 text-xs rounded-full bg-muted text-muted-foreground border border-border flex items-center gap-1 shrink-0">
+                            <Volume2 className="w-3 h-3" />
+                            {schedule.volume || 100}%
                           </span>
-                        )}
-                        <span className={`px-2 py-0.5 text-xs rounded-full bg-muted flex items-center gap-1 ${catConfig.color}`}>
-                          <catConfig.icon className="w-3 h-3" />
-                          {catConfig.label}
-                        </span>
-                        <span className="px-2 py-0.5 text-xs rounded-full bg-muted flex items-center gap-1 text-muted-foreground">
-                          <Volume2 className="w-3 h-3" />
-                          {schedule.volume || 100}%
-                        </span>
+                        </div>
+
+                        {/* Right: play-all toggle + enabled toggle + delete */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {schedule.playlist_id && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title={schedule.play_all ? 'Đang phát toàn bộ playlist – nhấn để chỉ phát 1 bài' : 'Chỉ phát 1 bài – nhấn để phát toàn bộ playlist'}
+                              onClick={() => handleTogglePlayAll(schedule.id)}
+                              disabled={togglingPlayAllId === schedule.id}
+                              className={`h-8 w-8 transition-colors ${
+                                schedule.play_all
+                                  ? 'text-purple-500 bg-purple-500/10 hover:bg-purple-500/20'
+                                  : 'text-muted-foreground hover:text-purple-500 hover:bg-purple-500/10'
+                              }`}
+                            >
+                              {togglingPlayAllId === schedule.id ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <PlaySquare className="w-4 h-4" />
+                              )}
+                            </Button>
+                          )}
+                          <Switch
+                            checked={schedule.is_active}
+                            onCheckedChange={() => handleToggle(schedule.id)}
+                            disabled={togglingId === schedule.id}
+                          />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleDelete(schedule.id)}
+                            disabled={deletingId === schedule.id}
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                          >
+                            {deletingId === schedule.id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-4 h-4" />
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* Bottom row: weekday pills */}
+                      <div className="flex gap-1 flex-wrap">
+                        {WEEKDAYS.map((day) => (
+                          <span
+                            key={day}
+                            className={`px-2 py-0.5 text-xs rounded-full font-medium transition-colors ${
+                              schedule[day as keyof Schedule]
+                                ? 'bg-primary text-primary-foreground'
+                                : 'bg-muted/60 text-muted-foreground/50'
+                            }`}
+                          >
+                            {getWeekdayLabel(day)}
+                          </span>
+                        ))}
                       </div>
                     </div>
-
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        checked={schedule.is_active}
-                        onCheckedChange={() => handleToggle(schedule.id)}
-                        disabled={togglingId === schedule.id}
-                      />
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleDelete(schedule.id)}
-                        disabled={deletingId === schedule.id}
-                        className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                      >
-                        {deletingId === schedule.id ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Trash2 className="w-4 h-4" />
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* Active Days */}
-                  <div className="flex gap-1 mt-2">
-                    {WEEKDAYS.map((day) => (
-                      <span
-                        key={day}
-                        className={`px-2 py-0.5 text-xs rounded-full transition-colors ${
-                          schedule[day as keyof Schedule]
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-muted text-muted-foreground'
-                        }`}
-                      >
-                        {getWeekdayLabel(day)}
-                      </span>
-                    ))}
                   </div>
                 </motion.div>
               );
@@ -273,7 +333,7 @@ export function ScheduleManager() {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -10 }}
                     onSubmit={handleAddSchedule}
-                    className="p-3 rounded-lg border border-dashed border-primary/50 bg-primary/5 space-y-3"
+                    className="p-4 rounded-xl border border-primary/30 bg-primary/5 space-y-4"
                   >
                     <div className="flex items-center gap-2">
                       <Clock className="w-4 h-4 text-muted-foreground" />
@@ -298,28 +358,6 @@ export function ScheduleManager() {
                       <span className="text-sm">Chỉ phát một lần (tự tắt sau khi phát)</span>
                     </label>
 
-                    {/* Song Category Selector */}
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Loại bài phát:</label>
-                      <div className="flex gap-2">
-                        {categoryOptions.map((cat) => (
-                          <button
-                            key={cat.value}
-                            type="button"
-                            onClick={() => setSongCategory(cat.value)}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-all ${
-                              songCategory === cat.value
-                                ? 'bg-primary text-primary-foreground'
-                                : 'bg-muted hover:bg-muted/80'
-                            }`}
-                          >
-                            <cat.icon className="w-4 h-4" />
-                            {cat.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
                     {/* Volume Control */}
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
@@ -338,6 +376,55 @@ export function ScheduleManager() {
                         className="w-full"
                       />
                     </div>
+
+                    {/* Playlist Selector */}
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium flex items-center gap-2">
+                        <ListMusic className="w-4 h-4" />
+                        Playlist:
+                      </label>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => { setPlaylistId(null); setPlayAll(false); }}
+                          className={`px-3 py-1.5 text-sm rounded-lg transition-all ${
+                            playlistId === null
+                              ? 'bg-primary text-primary-foreground'
+                              : 'bg-muted hover:bg-muted/80'
+                          }`}
+                        >
+                          Tất cả
+                        </button>
+                        {playlists.map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => setPlaylistId(p.id)}
+                            className={`px-3 py-1.5 text-sm rounded-lg transition-all ${
+                              playlistId === p.id
+                                ? 'bg-green-500 text-white'
+                                : 'bg-muted hover:bg-muted/80'
+                            }`}
+                          >
+                            {p.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Play All option - only shown when a playlist is selected */}
+                    {playlistId !== null && (
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={playAll}
+                          onChange={(e) => setPlayAll(e.target.checked)}
+                          className="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary"
+                        />
+                        <PlaySquare className="w-4 h-4 text-purple-500" />
+                        <span className="text-sm">Phát toàn bộ bài hát trong playlist theo thứ tự</span>
+                      </label>
+                    )}
 
                     {/* Weekday Selector */}
                     <div className="flex flex-wrap gap-1">
@@ -388,14 +475,13 @@ export function ScheduleManager() {
 
               {/* Add Button */}
               {!showAddForm && (
-                <Button
-                  variant="outline"
-                  className="w-full border-dashed"
+                <button
                   onClick={() => setShowAddForm(true)}
+                  className="w-full mt-1 py-2.5 flex items-center justify-center gap-2 rounded-xl border border-dashed border-border text-sm text-muted-foreground hover:text-foreground hover:border-primary/50 hover:bg-primary/5 transition-all duration-200"
                 >
-                  <Plus className="w-4 h-4 mr-2" />
+                  <Plus className="w-4 h-4" />
                   Thêm lịch phát
-                </Button>
+                </button>
               )}
             </div>
           </motion.div>
