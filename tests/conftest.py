@@ -1,11 +1,17 @@
 import functools
 import http.server
+import os
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 
 import pytest
+
+# Must run before any test imports app: isolated DB, and no write to the real dotenv file
+os.environ['DATABASE_URL'] = f"sqlite:///{os.path.join(tempfile.mkdtemp(), 'test.db')}"
+os.environ.setdefault('SECRET_KEY', 'test-only-secret')
 
 
 @pytest.fixture

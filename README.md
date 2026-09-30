@@ -10,7 +10,7 @@ A web application for scheduling and playing music automatically on a Raspberry 
 - **Scheduled playback** — set time + weekdays, supports one-time schedules
 - **Playback controls** — play/pause, stop, seek, volume, shuffle, fade in/out
 - **Android app** — remote control via Tailscale VPN (Capacitor WebView)
-- **Persistent login** — remember token keeps sessions alive for 1 year
+- **Persistent login** — 30-day sliding session plus a 365-day refresh token per device (also sliding), so each phone/PC stays signed in independently; logging out signs out only that device
 - **Auto-update yt-dlp** — nightly update at 3:00 AM (skipped while playing or downloading)
 
 ## Requirements
@@ -184,6 +184,7 @@ JAVA_HOME=/path/to/java-21 ./gradlew assembleDebug
 | Stuck on an old yt-dlp version | Python < 3.10 — upgrade to Raspberry Pi OS Bookworm |
 | Audio stutters | `journalctl -u music-scheduler \| grep -i underrun`; enable zram on 1GB boards |
 | Forgot password | `python3 migrate_user.py` (generates a new password) |
+| First-start admin password | Not printed to the logs: `cat instance/initial-admin-password.txt`, then delete the file |
 | Service not running | `sudo journalctl -u music-scheduler -f` |
 | Database issues | Check files in `instance/` directory |
 

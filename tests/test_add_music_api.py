@@ -1,15 +1,8 @@
 """/add-music runs under the real eventlet hub, with yt-dlp fetching from a local HTTP server."""
-import os
-import tempfile
-
 import pytest
 
-_db_dir = tempfile.mkdtemp()
-os.environ['DATABASE_URL'] = f'sqlite:///{os.path.join(_db_dir, "test.db")}'
-os.environ.setdefault('SECRET_KEY', 'test-only-secret')  # keeps app import from writing the real dotenv
-
-import app as app_module  # noqa: E402 - DATABASE_URL must be set first
-import youtube_downloader as ytd  # noqa: E402
+import app as app_module  # conftest.py points DATABASE_URL at a temp DB first
+import youtube_downloader as ytd
 
 
 @pytest.fixture

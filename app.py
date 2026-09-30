@@ -2,7 +2,7 @@
 import eventlet
 eventlet.monkey_patch()
 
-from flask import Flask, render_template, jsonify, request, redirect, url_for, send_file, session, send_from_directory
+from flask import Flask, render_template, jsonify, request, redirect, url_for, send_file, session, send_from_directory, g
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import event as sa_event
 from sqlalchemy.engine import Engine
@@ -11,7 +11,8 @@ from flask_wtf.csrf import CSRFProtect
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
+from datetime import datetime, timedelta
+import hashlib
 import pygame
 import time
 import os
@@ -50,6 +51,14 @@ UPDATE_YTDLP_HOUR = 3  # off-peak; skipped while playing or downloading
 PROGRESS_EMIT_INTERVAL = 1.0  # seconds between download progress events
 MAX_UPLOAD_SIZE = 150 * 1024 * 1024  # 150MB
 
+# Login persistence: a sliding session cookie backed by one refresh token per device
+SESSION_LIFETIME = timedelta(days=30)   # extended on every request
+REFRESH_TOKEN_LIFETIME = timedelta(days=365)  # extended whenever the token is used
+REFRESH_TOKEN_TOUCH_INTERVAL = timedelta(days=1)  # limits DB writes on the Pi's SD card
+MAX_REFRESH_TOKENS_PER_USER = 20
+REFRESH_COOKIE = 'refresh_token'
+LEGACY_REMEMBER_COOKIE = 'remember_token'  # pre-refresh-token cookie, migrated on first use
+
 # Global download state
 download_state = {
     'active': False,
@@ -72,11 +81,11 @@ app.config['UPLOAD_FOLDER'] = 'music'
 app.config['SECRET_KEY'] = load_secret_key(DOTENV_PATH)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SESSION_TYPE'] = 'filesystem'
-app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours session lifetime
+app.config['PERMANENT_SESSION_LIFETIME'] = SESSION_LIFETIME
+app.config['SESSION_REFRESH_EACH_REQUEST'] = True  # sliding expiry
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_SIZE # Limit upload size to prevent abuse
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax' # Adjust as needed for your frontend setup (e.g., 'None' for cross-origin)
 app.config['SESSION_COOKIE_SECURE'] = False # Set to True if using HTTPS
-app.config['REMEMBER_COOKIE_DURATION'] = 365 * 24 * 3600  # 1 year
 
 socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins='*', message_queue=None)
 db = SQLAlchemy(app)
@@ -171,6 +180,14 @@ def init_scheduler():
         socketio.start_background_task(playback_broadcast_loop)
         scheduler.add_job(scheduled_ytdlp_update, 'cron', hour=UPDATE_YTDLP_HOUR, id='update_ytdlp')
 
+def write_initial_admin_password(password):
+    os.makedirs(app.instance_path, exist_ok=True)
+    path = os.path.join(app.instance_path, 'initial-admin-password.txt')
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(password + '\n')
+    return path
+
 def init_admin_user():
     """Initialize the admin user if not exists"""
     try:
@@ -210,18 +227,10 @@ def init_admin_user():
                 db_session.add(admin)
                 db_session.commit()
                 
-                # Display password prominently
-                print("\n" + "="*60)
-                print("🔐 ADMIN PASSWORD GENERATED")
-                print("="*60)
-                print(f"Username: admin")
-                print(f"Password: {random_password}")
-                print("="*60)
-                print("⚠️  SAVE THIS PASSWORD NOW! It will not be shown again.")
-                print("="*60 + "\n")
-                
-                logger.info("Admin user created successfully")
-                logger.info(f"Admin password: {random_password}")
+                # Never print the password: stdout/logs end up in the systemd journal
+                password_file = write_initial_admin_password(random_password)
+                logger.warning(f"Admin user created. Read the password with: cat {password_file} "
+                               "(delete the file after saving it)")
             else:
                 logger.info("Admin user already exists")
     except Exception as e:
@@ -465,29 +474,111 @@ class User(db.Model):
         self.remember_token = secrets.token_urlsafe(64)
         return self.remember_token
 
+class AuthToken(db.Model):
+    """Long-lived refresh token, one per logged-in device. Only its SHA-256 is stored."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    token_hash = db.Column(db.String(64), unique=True, nullable=False)
+    user_agent = db.Column(db.String(200))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_used_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+
+def hash_token(raw):
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+def start_user_session(user):
+    session.clear()
+    session['user_id'] = user.id
+    session['username'] = user.username
+    session.permanent = True
+
+def issue_refresh_token(db_session, user):
+    """Create a refresh token for this device; the cookie is set in after_request."""
+    now = datetime.utcnow()
+    raw = secrets.token_urlsafe(48)
+    db_session.add(AuthToken(
+        user_id=user.id,
+        token_hash=hash_token(raw),
+        user_agent=(request.user_agent.string or '')[:200],
+        created_at=now,
+        last_used_at=now,
+        expires_at=now + REFRESH_TOKEN_LIFETIME,
+    ))
+    db_session.query(AuthToken).filter(AuthToken.user_id == user.id, AuthToken.expires_at <= now).delete()
+    db_session.flush()
+    stale = db_session.query(AuthToken.id).filter_by(user_id=user.id).order_by(
+        AuthToken.last_used_at.desc()).offset(MAX_REFRESH_TOKENS_PER_USER).all()
+    if stale:
+        db_session.query(AuthToken).filter(AuthToken.id.in_([t.id for t in stale])).delete(synchronize_session=False)
+    g.set_refresh_cookie = raw
+
+def user_from_refresh_cookies(db_session):
+    """Resolve the user from the refresh cookie (or a legacy remember_token cookie)."""
+    now = datetime.utcnow()
+    raw = request.cookies.get(REFRESH_COOKIE)
+    if raw:
+        token = db_session.query(AuthToken).filter_by(token_hash=hash_token(raw)).first()
+        if token and token.expires_at > now:
+            if now - token.last_used_at >= REFRESH_TOKEN_TOUCH_INTERVAL:
+                token.last_used_at = now
+                token.expires_at = now + REFRESH_TOKEN_LIFETIME
+                g.set_refresh_cookie = raw  # re-send so the browser's copy slides too
+            return db_session.get(User, token.user_id)
+        g.clear_refresh_cookie = True
+
+    legacy = request.cookies.get(LEGACY_REMEMBER_COOKIE)
+    if legacy:
+        user = db_session.query(User).filter_by(remember_token=legacy).first()
+        g.clear_legacy_cookie = True
+        if user:
+            user.remember_token = None
+            issue_refresh_token(db_session, user)
+            logger.info(f"[Auth] Migrated legacy remember_token for '{user.username}'")
+            return user
+    return None
+
+def revoke_refresh_token():
+    raw = request.cookies.get(REFRESH_COOKIE)
+    if raw:
+        with session_scope() as db_session:
+            db_session.query(AuthToken).filter_by(token_hash=hash_token(raw)).delete()
+
+@app.after_request
+def apply_auth_cookies(response):
+    raw = g.pop('set_refresh_cookie', None)
+    if raw:
+        response.set_cookie(
+            REFRESH_COOKIE, raw,
+            max_age=int(REFRESH_TOKEN_LIFETIME.total_seconds()),
+            httponly=True, samesite='Lax',
+            secure=app.config['SESSION_COOKIE_SECURE'],
+        )
+    elif g.pop('clear_refresh_cookie', False):
+        response.delete_cookie(REFRESH_COOKIE)
+    if g.pop('clear_legacy_cookie', False):
+        response.delete_cookie(LEGACY_REMEMBER_COOKIE)
+    return response
+
 # Create a function to check if a user is logged in
 def get_authenticated_user():
-    """Check authentication via session cookie, with remember_token fallback.
+    """Check authentication via session cookie, with refresh-token fallback.
     Returns (user_id, username) or (None, None)."""
     # Check session first
     if 'user_id' in session:
         return session['user_id'], session.get('username', '')
     
-    # Check remember_token cookie for persistent login
-    remember_token = request.cookies.get('remember_token')
-    if remember_token:
+    # Session gone (expired, cleared, new SECRET_KEY): fall back to this device's refresh token
+    if REFRESH_COOKIE in request.cookies or LEGACY_REMEMBER_COOKIE in request.cookies:
         try:
             with session_scope() as db_session:
-                user = db_session.query(User).filter_by(remember_token=remember_token).first()
+                user = user_from_refresh_cookies(db_session)
                 if user:
-                    # Restore session from remember token
-                    session['user_id'] = user.id
-                    session['username'] = user.username
-                    session.permanent = True
+                    start_user_session(user)
                     return user.id, user.username
         except Exception as e:
-            logger.error(f"[Auth] Error checking remember_token: {e}")
-    
+            logger.error(f"[Auth] Error checking refresh token: {e}")
+
     return None, None
 
 def login_required(f):
@@ -503,7 +594,8 @@ def login_required(f):
 def socketio_login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'user_id' in session:
+        user_id, _ = get_authenticated_user()
+        if user_id is not None:
             return f(*args, **kwargs)
         emit('error', {'message': 'Unauthorized. Please login.'})
         return
@@ -1174,24 +1266,10 @@ def api_login():
                 return jsonify({'error': 'Sai tên đăng nhập hoặc mật khẩu'}), 401
 
             if user.check_password(password):
-                session['user_id'] = user.id
-                session['username'] = user.username
-                session.permanent = True
-                
-                # Generate remember_token for persistent login
-                remember_token = user.generate_remember_token()
-                
+                start_user_session(user)
+                issue_refresh_token(db_session, user)
                 logger.info(f"Login success for user: '{username}'")
-                response = jsonify({'success': True, 'username': user.username})
-                # Set remember_token cookie (1 year)
-                response.set_cookie(
-                    'remember_token', 
-                    remember_token,
-                    max_age=365 * 24 * 3600,
-                    httponly=True,
-                    samesite='Lax'
-                )
-                return response
+                return jsonify({'success': True, 'username': user.username})
             else:
                 logger.warning(f"Login failed: wrong password for user '{username}'")
                 return jsonify({'error': 'Sai tên đăng nhập hoặc mật khẩu'}), 401
@@ -1202,22 +1280,15 @@ def api_login():
 
 @app.route('/api/logout')
 def api_logout():
-    """API logout endpoint"""
-    # Clear remember_token from DB
-    remember_token = request.cookies.get('remember_token')
-    if remember_token:
-        try:
-            with session_scope() as db_session:
-                user = db_session.query(User).filter_by(remember_token=remember_token).first()
-                if user:
-                    user.remember_token = None
-        except Exception as e:
-            logger.error(f"Error clearing remember_token: {e}")
-    
+    """API logout endpoint: signs out this device only"""
+    try:
+        revoke_refresh_token()
+    except Exception as e:
+        logger.error(f"Error revoking refresh token: {e}")
     session.clear()
-    response = jsonify({'success': True})
-    response.delete_cookie('remember_token')
-    return response
+    g.clear_refresh_cookie = True
+    g.clear_legacy_cookie = True
+    return jsonify({'success': True})
 
 # =============================================================================
 # Original Routes
@@ -2160,8 +2231,8 @@ def login():
             user = db_session.query(User).filter_by(username=username).first()
             
             if user and user.check_password(password):
-                session['user_id'] = user.id
-                session['username'] = user.username
+                start_user_session(user)
+                issue_refresh_token(db_session, user)
                 
                 # Redirect to requested page or default to index
                 next_page = request.args.get('next', url_for('index'))
@@ -2174,7 +2245,12 @@ def login():
 @app.route('/logout')
 def logout():
     """Logout route"""
+    try:
+        revoke_refresh_token()
+    except Exception as e:
+        logger.error(f"Error revoking refresh token: {e}")
     session.clear()
+    g.clear_refresh_cookie = True
     return redirect(url_for('login'))
 
 # =============================================================================
