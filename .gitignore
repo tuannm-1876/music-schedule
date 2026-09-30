@@ -42,3 +42,6 @@ graphify-out/
 # Local config / secrets
 .env
 .pytest_cache/
+
+# Local planning notes (not part of the app)
+plans/
