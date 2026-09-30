@@ -38,3 +38,7 @@ music-scheduler-venv.service
 .github/
 static
 graphify-out/
+
+# Local config / secrets
+.env
+.pytest_cache/

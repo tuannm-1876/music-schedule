@@ -4,27 +4,31 @@ eventlet.monkey_patch()
 
 from flask import Flask, render_template, jsonify, request, redirect, url_for, send_file, session, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import event as sa_event
+from sqlalchemy.engine import Engine
 from flask_socketio import SocketIO, emit
 from flask_wtf.csrf import CSRFProtect
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
-import yt_dlp
 import pygame
+import time
 import os
 import json
-import subprocess
-import sys
 import logging
 import shutil
-import re
 import secrets
+import sqlite3
 from werkzeug.utils import secure_filename
 import mutagen
 from mutagen.mp3 import MP3
 import glob
 from contextlib import contextmanager
+from dotenv import load_dotenv
+
+load_dotenv()
+import youtube_downloader  # noqa: E402 - reads YTDLP_* env at import time
 
 # Configure logging
 logging.basicConfig(
@@ -39,8 +43,9 @@ logging.getLogger('apscheduler').setLevel(logging.WARNING)
 # Constants
 ALLOWED_EXTENSIONS = {'mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'}
 DEFAULT_VOLUME = 0.5
-BROADCAST_INTERVAL = 0.5
-UPDATE_YTDLP_HOUR = 1
+BROADCAST_INTERVAL = 1.0  # seconds; 1s is smooth enough for the progress bar and cheap on a Pi
+UPDATE_YTDLP_HOUR = 3  # off-peak; skipped while playing or downloading
+PROGRESS_EMIT_INTERVAL = 1.0  # seconds between download progress events
 MAX_UPLOAD_SIZE = 150 * 1024 * 1024  # 150MB
 
 # Global download state
@@ -52,12 +57,15 @@ download_state = {
     'total': 0,
     'current_song': '',
     'playlist_title': '',
-    'cancelled': False
+    'cancelled': False,
+    'percent': 0
 }
+download_job = None  # youtube_downloader.DownloadJob while a download runs
+ytdlp_updating = False  # blocks new downloads while pip rewrites the yt-dlp package
 
 app = Flask(__name__)
 csrf = CSRFProtect(app)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///music.db' 
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///music.db')
 app.config['UPLOAD_FOLDER'] = 'music'
 app.config['SECRET_KEY'] = 'super-secret-key-for-music-scheduler-app' # In production, use a secure random key and keep it secret!
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -70,6 +78,15 @@ app.config['REMEMBER_COOKIE_DURATION'] = 365 * 24 * 3600  # 1 year
 
 socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins='*', message_queue=None)
 db = SQLAlchemy(app)
+
+@sa_event.listens_for(Engine, 'connect')
+def _set_sqlite_pragmas(dbapi_conn, _record):
+    """WAL + NORMAL sync: far fewer fsyncs on the Pi's SD card, readers never block writers."""
+    if isinstance(dbapi_conn, sqlite3.Connection):
+        cursor = dbapi_conn.cursor()
+        cursor.execute('PRAGMA journal_mode=WAL')
+        cursor.execute('PRAGMA synchronous=NORMAL')
+        cursor.close()
 
 # Get absolute path for the project directory
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -116,62 +133,41 @@ scheduler = None
 scheduled_playlist_queue = []  # List of song IDs to play sequentially
 scheduled_playlist_volume = 100  # Volume for the current scheduled playlist
 # Download state management functions
-def set_download_state(status, message='', current=0, total=0, current_song='', playlist_title='', cancelled=False):
-    """Update global download state"""
-    global download_state
+def publish_download_state(status, message='', current=0, total=0, current_song='', percent=0, cancelled=False):
+    """Update global download state and push it to every client."""
     download_state.update({
-        'active': status != 'completed' and status != 'error' and status != 'cancelled',
+        'active': status not in ('completed', 'error', 'cancelled'),
         'status': status,
         'message': message,
         'current': current,
         'total': total,
         'current_song': current_song,
-        'playlist_title': playlist_title,
-        'cancelled': cancelled
+        'cancelled': cancelled,
+        'percent': round(percent, 1),
     })
-    logger.info(f"Download state updated: {download_state}")
+    logger.debug(f"Download state updated: {download_state}")
+    socketio.emit('download_progress', dict(download_state))
 
 def get_download_state():
     """Get current download state"""
     return download_state.copy()
 
-def clear_download_state():
-    """Clear download state"""
-    global download_state
-    download_state = {
-        'active': False,
-        'status': '',
-        'message': '',
-        'current': 0,
-        'total': 0,
-        'current_song': '',
-        'playlist_title': '',
-        'cancelled': False
-    }
-
 def cancel_download():
-    """Cancel current download"""
-    global download_state
-    if download_state['active']:
-        download_state['cancelled'] = True
-        set_download_state('cancelled', 'Download has been cancelled', download_state['current'], download_state['total'], cancelled=True)
-        logger.info("Download cancelled by user")
-        socketio.emit('download_progress', {
-            'status': 'cancelled',
-            'message': 'Download has been cancelled',
-            'current': download_state['current'],
-            'total': download_state['total']
-        })
-        return True
-    return False
+    """Cancel the running download job, if any"""
+    if download_job is None:
+        return False
+    download_job.cancel()
+    publish_download_state('cancelling', 'Đang hủy...', download_state['current'], download_state['total'])
+    logger.info("Download cancelled by user")
+    return True
 
 def init_scheduler():
     global scheduler
     if scheduler is None:
         scheduler = BackgroundScheduler()
         scheduler.start()
-        scheduler.add_job(safe_broadcast, 'interval', seconds=BROADCAST_INTERVAL, id='broadcast_playback')
-        scheduler.add_job(update_ytdlp, 'cron', hour=UPDATE_YTDLP_HOUR, id='update_ytdlp')
+        socketio.start_background_task(playback_broadcast_loop)
+        scheduler.add_job(scheduled_ytdlp_update, 'cron', hour=UPDATE_YTDLP_HOUR, id='update_ytdlp')
 
 def init_admin_user():
     """Initialize the admin user if not exists"""
@@ -257,8 +253,32 @@ def session_scope():
     finally:
         session.close()
 
-def broadcast_playback_state():
-    """Broadcast current playback state to all clients"""
+_title_cache = {'song_id': None, 'title': None}
+_last_idle_payload = None
+
+def get_cached_song_title(song_id):
+    """Title of the playing song; the DB is only hit when the song changes."""
+    if song_id is None:
+        return None
+    if _title_cache['song_id'] != song_id:
+        with app.app_context():
+            with session_scope() as session:
+                song = session.get(Song, song_id)
+                _title_cache.update(song_id=song_id, title=song.title if song else None)
+    return _title_cache['title']
+
+def playback_broadcast_loop():
+    """Single long-lived greenlet replacing the old 0.5s APScheduler job."""
+    while True:
+        broadcast_playback_state(force=False)
+        socketio.sleep(BROADCAST_INTERVAL)
+
+def broadcast_playback_state(force=True):
+    """Broadcast current playback state to all clients.
+
+    With force=False (the periodic loop) nothing is sent while idle and unchanged.
+    """
+    global _last_idle_payload
     try:
         global current_position, current_song_id, current_song_duration, is_playing, seek_offset
         
@@ -311,31 +331,29 @@ def broadcast_playback_state():
                         play_music(next_id)
                 socketio.start_background_task(_play_queued)
 
-        # Get current song title
-        current_title = None
-        if current_song_id:
-            try:
-                with app.app_context():
-                    with session_scope() as session:
-                        song = session.get(Song, current_song_id)
-                        if song:
-                            current_title = song.title
-            except Exception as e:
-                logger.error(f"Error getting song title: {e}")
-        
-        socketio.emit('playback_update', {
+        try:
+            current_title = get_cached_song_title(current_song_id)
+        except Exception as e:
+            logger.error(f"Error getting song title: {e}")
+            current_title = None
+
+        payload = {
             'position': current_position,
             'duration': current_song_duration,
             'is_playing': music_busy,
             'volume': int(volume * 100),
             'current_song_id': current_song_id,
             'current_song_title': current_title
-        })
+        }
+        if not music_busy:
+            if not force and payload == _last_idle_payload:
+                return
+            _last_idle_payload = payload
+        else:
+            _last_idle_payload = None
+        socketio.emit('playback_update', payload)
     except Exception as e:
         logger.error(f"Error in broadcast_playback_state: {e}")
-
-def safe_broadcast():
-    socketio.start_background_task(broadcast_playback_state)
 
 
 def fade_in():
@@ -515,71 +533,6 @@ def get_audio_duration(filename):
         logger.error(f"Error getting audio duration for {filename}: {e}")
         return 0
 
-def update_ytdlp():
-    """Update yt-dlp with multiple methods compatible with Raspberry Pi"""
-    try:
-        venv_python = os.path.join(BASE_DIR, "venv", "bin", "python")
-        venv_pip = os.path.join(BASE_DIR, "venv", "bin", "pip")
-
-        if os.path.exists(venv_python) and os.path.exists(venv_pip):
-            logger.info("Attempting to update yt-dlp using virtual environment")
-            subprocess.check_call([venv_pip, "install", "--upgrade", "yt-dlp"])
-            logger.info("yt-dlp updated successfully using virtual environment")
-            return
-
-        # On modern Debian/Raspberry Pi OS, pip commands can fail with an
-        # 'externally-managed-environment' error. The following methods attempt to work around this.
-
-        # Method 1: Use pip with --break-system-packages. This is the direct override for the error.
-        try:
-            logger.info("Attempting to update yt-dlp with --break-system-packages")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--break-system-packages", "--upgrade", "yt-dlp"])
-            logger.info("yt-dlp updated successfully with --break-system-packages")
-            return
-        except subprocess.CalledProcessError:
-            logger.warning("Update with --break-system-packages failed. Trying next method.")
-            pass
-
-        # Method 2: Try installing for the current user. This might also be blocked.
-        try:
-            logger.info("Attempting to update yt-dlp for user")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "--upgrade", "yt-dlp"])
-            logger.info("yt-dlp updated successfully for user")
-            return
-        except subprocess.CalledProcessError:
-            logger.warning("Update with --user failed. Trying next method.")
-            pass
-
-        # Method 3: Use the system package manager (apt).
-        # Note: This requires the user running the app to have passwordless sudo access.
-        try:
-            logger.info("Attempting to update yt-dlp using apt-get")
-            subprocess.check_call(["sudo", "apt-get", "update"])
-            subprocess.check_call(["sudo", "apt-get", "install", "-y", "yt-dlp"])
-            logger.info("yt-dlp updated successfully using apt-get")
-            return
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            logger.warning("Update with apt-get failed. This may be due to permissions or apt-get not being found.")
-            pass
-
-        logger.error("All update methods for yt-dlp have failed. Please update it manually.")
-
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during yt-dlp update: {e}")
-
-def get_ytdlp_version():
-    """Get current yt-dlp version"""
-    try:
-        result = subprocess.run([sys.executable, "-m", "yt_dlp", "--version"],
-                              capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            return result.stdout.strip()
-        else:
-            return "Unknown"
-    except Exception as e:
-        logger.error(f"Error getting yt-dlp version: {e}")
-        return "Unknown"
-
 def get_next_scheduled_song():
     now = datetime.now()
     current_time = now.strftime("%H:%M")
@@ -670,30 +623,11 @@ def schedule_music():
         try:
             if scheduler is None:
                 init_scheduler()
-            # Store existing jobs we want to preserve
-            preserved_jobs = {}
+            # Rebuild only the playback schedules; system jobs (yt-dlp update) stay as they are
             for job in scheduler.get_jobs():
-                if job.id in ['broadcast_playback', 'update_ytdlp']:
-                    preserved_jobs[job.id] = job.trigger
-                    
-            scheduler.remove_all_jobs()
-            
-            # Restore preserved jobs
-            if 'broadcast_playback' in preserved_jobs:
-                scheduler.add_job(
-                    broadcast_playback_state,
-                    'interval',
-                    seconds=BROADCAST_INTERVAL,
-                    id='broadcast_playback'
-                )
-            
-            if 'update_ytdlp' in preserved_jobs:
-                scheduler.add_job(
-                    update_ytdlp,
-                    'cron',
-                    hour=UPDATE_YTDLP_HOUR,
-                    id='update_ytdlp'
-                )
+                if job.id.startswith('schedule_'):
+                    job.remove()
+
             with session_scope() as session:
                 schedules = session.query(Schedule).filter_by(enabled=True).all()
                 logger.info(f"Setting up schedules: {len(schedules)} found")
@@ -773,17 +707,6 @@ def schedule_music():
                 
         except Exception as e:
             logger.error(f"Error in schedule_music: {e}")
-            # Attempt to restore critical jobs on error
-            try:
-                if 'broadcast_playback' not in scheduler:
-                    scheduler.add_job(
-                        broadcast_playback_state,
-                        'interval',
-                        seconds=BROADCAST_INTERVAL,
-                        id='broadcast_playback'
-                    )
-            except Exception as e:
-                logger.error(f"Failed to restore broadcast job: {e}")
             return False
 
 def play_next_song(schedule_id=None, one_time=False, volume=100, playlist_id=None, play_all=False):
@@ -886,7 +809,7 @@ def play_next_song(schedule_id=None, one_time=False, volume=100, playlist_id=Non
 
 def play_music(song_id):
     global current_song_id, current_song_duration, is_playing, current_position, seek_offset
-    
+    _title_cache['song_id'] = None  # SQLite may reuse ids of deleted songs
     try:
         with session_scope() as session:
             song = session.get(Song, song_id)
@@ -952,270 +875,120 @@ def play_music(song_id):
         logger.error(f"Error playing music: {e}")
         return False
 
-def normalize_filename(title):
-    # Replace special characters and spaces
-    # Remove any character that is not alphanumeric, space, or underscore
-    title = re.sub(r'[^\w\s]', '', title)
-    # Replace spaces with underscores
-    title = title.replace(' ', '_')
-    # Ensure only one underscore between words
-    title = re.sub(r'_+', '_', title)
-    return title
+def serialize_songs(db_session):
+    """All songs in playlist order, in the shape the React frontend expects."""
+    songs = db_session.query(Song).order_by(
+        Song.position.asc(),
+        Song.last_played_at.is_(None).desc(),
+        Song.priority.desc(),
+        Song.last_played_at.asc()
+    ).all()
+    return [{
+        'id': s.id,
+        'title': s.title,
+        'duration': s.duration,
+        'source': s.source,
+        'file_path': s.filename,
+        'position': s.position,
+        'delete_after_play': s.delete_after_play or False,
+        'playlist_id': s.playlist_id,
+        'last_played_at': s.last_played_at.isoformat() if s.last_played_at else None,
+        'priority': s.priority,
+        'created_at': s.created_at.isoformat() if s.created_at else None
+    } for s in songs]
 
-def is_playlist_url(url):
-    """Check if URL is a playlist"""
-    playlist_indicators = [
-        'playlist?list=',
-        '&list=',
-        '/playlist/',
-        'music.youtube.com/playlist'
-    ]
-    return any(indicator in url for indicator in playlist_indicators)
+def add_downloaded_song(item, source):
+    """Insert a finished yt-dlp item into the DB. Returns False if it already existed."""
+    filepath = item.get('filepath')
+    if not filepath or not os.path.isfile(filepath):
+        logger.error(f"Downloaded file missing: {filepath}")
+        return False
+    filename = os.path.relpath(filepath, BASE_DIR)
+    with session_scope() as db_session:
+        if db_session.query(Song).filter_by(filename=filename).first():
+            logger.info(f"Song already exists in database: {filename}")
+            return False
+        max_position = db_session.query(db.func.max(Song.position)).scalar() or -1
+        db_session.add(Song(
+            title=item.get('title') or os.path.splitext(os.path.basename(filename))[0],
+            filename=filename,
+            source=source,
+            duration=int(item.get('duration') or 0) or get_audio_duration(filepath),
+            position=max_position + 1
+        ))
+    with session_scope() as db_session:
+        socketio.emit('song_added', {'title': item.get('title'), 'songs': serialize_songs(db_session)})
+    return True
 
-def download_single_track(url):
-    """Download a single track from YouTube"""
+def run_download_job(job):
+    """Drive a DownloadJob from a greenlet: persist songs and publish progress."""
+    global download_job
+    source = 'youtube_playlist' if job.is_playlist else 'youtube'
+    index, total, title = 0, 1, ''
+    added, existing = 0, 0
+    failed_items = set()  # yt-dlp may print several ERROR lines for one item
+    last_emit = 0.0
     try:
-        # First extract info without downloading
-        with yt_dlp.YoutubeDL({'extract_flat': True}) as ydl:
-            info = ydl.extract_info(url, download=False)
-            duration = int(info.get('duration', 0))
-            normalized_title = normalize_filename(info['title'])
-            
-        # Then download with normalized filename
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': os.path.join(MUSIC_DIR, f'{normalized_title}.%(ext)s'),
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        
-        # Get the actual mp3 file
-        mp3_file = os.path.join(MUSIC_DIR, f'{normalized_title}.mp3')
-        if not os.path.exists(mp3_file):
-            raise Exception(f"Downloaded file not found: {mp3_file}")
-            
-        actual_filename = os.path.relpath(mp3_file, BASE_DIR)
-        
-        if duration == 0:
-            duration = get_audio_duration(mp3_file)
-        
-        return {
-            'title': info['title'],
-            'filename': actual_filename,
-            'duration': duration
-        }
-    except Exception as e:
-        logger.error(f"Error downloading single track from {url}: {e}")
-        raise
-
-def download_playlist(url):
-    """Download all tracks from a YouTube playlist"""
-    try:
-        logger.info(f"Processing playlist: {url}")
-        
-        # Update state and emit start event
-        set_download_state('analyzing', 'Analyzing playlist...', 0, 0)
-        socketio.emit('download_progress', {
-            'status': 'analyzing',
-            'message': 'Analyzing playlist...',
-            'current': 0,
-            'total': 0
-        })
-        
-        # Extract playlist info
-        ydl_opts_info = {
-            'extract_flat': True,
-            'quiet': False,
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
-            playlist_info = ydl.extract_info(url, download=False)
-            
-        if 'entries' not in playlist_info:
-            raise Exception("Unable to extract song list from playlist")
-            
-        entries = playlist_info['entries']
-        if not entries:
-            raise Exception("Playlist is empty or inaccessible")
-            
-        playlist_title = playlist_info.get('title', 'Unknown')
-        logger.info(f"Found {len(entries)} songs in playlist: {playlist_title}")
-        
-        
-        downloaded_songs = []
-        failed_downloads = []
-        
-        # Download each track individually
-        for i, entry in enumerate(entries, 1):
-            # Check if download has been cancelled
-            if download_state.get('cancelled', False):
-                logger.info("Download cancelled by user, stopping playlist download")
-                clear_download_state()
-                socketio.emit('download_progress', {
-                    'status': 'cancelled',
-                    'message': 'Download has been cancelled',
-                    'current': i-1,
-                    'total': len(entries)
-                })
-                return {
-                    'playlist_title': playlist_info.get('title', 'Unknown Playlist'),
-                    'total_tracks': len(entries),
-                    'downloaded_tracks': len(downloaded_songs),
-                    'failed_tracks': len(failed_downloads),
-                    'songs': downloaded_songs,
-                    'failed_songs': failed_downloads,
-                    'cancelled': True
-                }
-            
-            if not entry:
-                continue
-                
-            try:
-                video_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry['id']}"
-                video_title = entry.get('title', f'Unknown Track {i}')
-                
-                logger.info(f"Downloading track {i}/{len(entries)}: {video_title}")
-                
-                # Update state and emit progress for current track
-                set_download_state('downloading', f'Downloading track {i}/{len(entries)}', i, len(entries), video_title, playlist_title)
-                socketio.emit('download_progress', {
-                    'status': 'downloading',
-                    'message': f'Downloading track {i}/{len(entries)}',
-                    'current_song': video_title,
-                    'current': i,
-                    'total': len(entries)
-                })
-                
-                
-                # Get detailed info for this specific video
-                ydl_opts_detail = {
-                    'quiet': True,
-                    'no_warnings': True
-                }
-                
-                with yt_dlp.YoutubeDL(ydl_opts_detail) as ydl_detail:
-                    video_info = ydl_detail.extract_info(video_url, download=False)
-                    duration = int(video_info.get('duration', 0))
-                    actual_title = video_info.get('title', video_title)
-                    
-                normalized_title = normalize_filename(actual_title)
-                
-                # Check if song already exists
-                mp3_file = os.path.join(MUSIC_DIR, f'{normalized_title}.mp3')
-                if os.path.exists(mp3_file):
-                    logger.info(f"Song already exists, skipping: {actual_title}")
-                    continue
-                
-                # Download the track
-                ydl_opts_download = {
-                    'format': 'bestaudio/best',
-                    'outtmpl': os.path.join(MUSIC_DIR, f'{normalized_title}.%(ext)s'),
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                    'quiet': True,
-                    'no_warnings': True
-                }
-                
-                with yt_dlp.YoutubeDL(ydl_opts_download) as ydl_download:
-                    ydl_download.download([video_url])
-                
-                if not os.path.exists(mp3_file):
-                    raise Exception(f"File was not created: {mp3_file}")
-                    
-                actual_filename = os.path.relpath(mp3_file, BASE_DIR)
-                
-                if duration == 0:
-                    duration = get_audio_duration(mp3_file)
-                
-                # Add song to database immediately after successful download
-                with session_scope() as db_session:
+        with app.app_context():
+            for event in job.events():
+                kind = event['type']
+                if kind == 'start':
+                    index = event.get('playlist_index') or index + 1
+                    total = max(event.get('n_entries') or total, index)
+                    title = event.get('title') or ''
+                    publish_download_state('downloading', f'Đang tải bài {index}/{total}', index, total, title,
+                                           percent=(index - 1) / total * 100)
+                elif kind == 'progress' and time.monotonic() - last_emit >= PROGRESS_EMIT_INTERVAL:
+                    last_emit = time.monotonic()
+                    publish_download_state('downloading', f'Đang tải bài {index}/{total}', index, total, title,
+                                           percent=((index - 1) + event['percent'] / 100) / total * 100)
+                elif kind == 'done':
                     try:
-                        # Check if song with same filename already exists
-                        existing_song = db_session.query(Song).filter_by(filename=actual_filename).first()
-                        if not existing_song:
-                            # Get max position and add 1
-                            max_position = db_session.query(db.func.max(Song.position)).scalar() or -1
-                            
-                            song = Song(
-                                title=actual_title,
-                                filename=actual_filename,
-                                source='youtube_playlist',
-                                duration=duration,
-                                position=max_position + 1
-                            )
-                            db_session.add(song)
-                            db_session.commit()
-                            logger.info(f"Added song to database immediately: {actual_title}")
-                            
-                            # Emit update to refresh UI
-                            socketio.emit('song_added', {
-                                'title': actual_title,
-                                'message': f'Added song: {actual_title}'
-                            })
+                        if add_downloaded_song(event, source):
+                            added += 1
                         else:
-                            logger.info(f"Song already exists in database: {actual_title}")
-                    except Exception as db_error:
-                        logger.error(f"Error adding song to database: {actual_title} - {db_error}")
-                
-                downloaded_songs.append({
-                    'title': actual_title,
-                    'filename': actual_filename,
-                    'duration': duration
-                })
-                
-                logger.info(f"Successfully downloaded: {actual_title}")
-                
-            except Exception as e:
-                logger.error(f"Error downloading track {i} ({video_title}): {e}")
-                failed_downloads.append({
-                    'title': video_title,
-                    'error': str(e)
-                })
-                continue
-        
-        result = {
-            'playlist_title': playlist_info.get('title', 'Unknown Playlist'),
-            'total_tracks': len(entries),
-            'downloaded_tracks': len(downloaded_songs),
-            'failed_tracks': len(failed_downloads),
-            'songs': downloaded_songs,
-            'failed_songs': failed_downloads
-        }
-        
-        logger.info(f"Completed playlist download: {result['downloaded_tracks']}/{result['total_tracks']} songs successful")
-        
-        # Clear state and emit completion event
-        clear_download_state()
-        socketio.emit('download_progress', {
-            'status': 'completed',
-            'message': f'Completed! Downloaded {result["downloaded_tracks"]}/{result["total_tracks"]} songs',
-            'current': result['total_tracks'],
-            'total': result['total_tracks'],
-            'downloaded': result['downloaded_tracks'],
-            'failed': result['failed_tracks']
-        })
-        
-        return result
-        
+                            existing += 1
+                    except Exception as e:
+                        # One bad row must not abort the rest of a playlist
+                        logger.error(f"Could not save downloaded song {event.get('filepath')}: {e}")
+                        failed_items.add(index)
+                elif kind == 'error':
+                    failed_items.add(index)
+                elif kind == 'finished':
+                    finish_download(event, added, existing, len(failed_items), total)
     except Exception as e:
-        logger.error(f"Error downloading playlist from {url}: {e}")
-        raise
+        logger.error(f"Download job failed for {job.url}: {e}")
+        publish_download_state('error', 'Lỗi khi tải nhạc, xem log máy chủ')
+    finally:
+        download_job = None
 
-def download_music(url):
-    """Main function to download music - handles both single tracks and playlists"""
-    if is_playlist_url(url):
-        return download_playlist(url)
+def finish_download(result, added, existing, failed, total):
+    summary = f'Đã thêm {added} bài'
+    if existing:
+        summary += f', {existing} bài đã có sẵn'
+    if failed:
+        summary += f', {failed} bài lỗi'
+    if result['cancelled']:
+        publish_download_state('cancelled', f'Đã hủy. {summary}', cancelled=True)
+    elif added or existing:
+        publish_download_state('completed', summary, total, total, percent=100)
     else:
-        return download_single_track(url)
+        publish_download_state('error', result['error'] or 'Không tải được bài nào')
+    logger.info(f"Download finished: {summary} (exit {result['returncode']})")
+
+def scheduled_ytdlp_update():
+    """Nightly yt-dlp upgrade; never competes with playback or a running download."""
+    global ytdlp_updating
+    if is_playing or download_job is not None or ytdlp_updating:
+        logger.info("Skipping scheduled yt-dlp update: player or download busy")
+        return
+    ytdlp_updating = True
+    try:
+        youtube_downloader.update_ytdlp()
+    except Exception as e:
+        logger.error(f"Scheduled yt-dlp update failed: {e}")
+    finally:
+        ytdlp_updating = False
 
 # =============================================================================
 # API Endpoints for React Frontend
@@ -1254,27 +1027,7 @@ def api_initial_state():
         disk_usage_info = get_disk_usage()
         
         with session_scope() as db_session:
-            # Get songs
-            songs = db_session.query(Song).order_by(
-                Song.position.asc(),
-                Song.last_played_at.is_(None).desc(),
-                Song.priority.desc(),
-                Song.last_played_at.asc()
-            ).all()
-            
-            songs_data = [{
-                'id': s.id,
-                'title': s.title,
-                'duration': s.duration,
-                'source': s.source,
-                'file_path': s.filename,
-                'position': s.position,
-                'delete_after_play': s.delete_after_play or False,
-                'playlist_id': s.playlist_id,
-                'last_played_at': s.last_played_at.isoformat() if s.last_played_at else None,
-                'priority': s.priority,
-                'created_at': s.created_at.isoformat() if s.created_at else None
-            } for s in songs]
+            songs_data = serialize_songs(db_session)
             
             # Get schedules
             schedules = db_session.query(Schedule).order_by(Schedule.time).all()
@@ -1375,7 +1128,7 @@ def api_initial_state():
                     'used_formatted': f"{disk_usage_info.get('used_gb', 0):.2f} GB",
                     'total_formatted': f"{disk_usage_info.get('total_gb', 0):.2f} GB"
                 },
-                'ytdlp_version': get_ytdlp_version(),
+                'ytdlp_version': youtube_downloader.get_ytdlp_version(),
                 'settings': {
                     'shuffle_mode': shuffle_mode,
                     'fade_enabled': fade_enabled,
@@ -1822,104 +1575,26 @@ def assign_song_to_playlist(song_id):
 @login_required
 @csrf.exempt
 def add_music():
-    # Support both form data and JSON
-    if request.is_json:
-        data = request.get_json()
-        url = data.get('url')
-    else:
-        url = request.form.get('url')
-    
-    if not url:
-        return jsonify({'success': False, 'message': 'No URL provided'}), 400
+    """Queue a YouTube download. Progress and results arrive over Socket.IO."""
+    global download_job
+    data = request.get_json(silent=True) or request.form
+    url = (data.get('url') or '').strip()
+    if not youtube_downloader.is_allowed_url(url):
+        return jsonify({'success': False, 'message': 'Chỉ hỗ trợ link YouTube'}), 400
+    if download_job is not None:
+        return jsonify({'success': False, 'message': 'Đang có bài đang tải, vui lòng chờ'}), 409
+    if ytdlp_updating:
+        return jsonify({'success': False, 'message': 'Đang cập nhật yt-dlp, thử lại sau ít phút'}), 409
 
+    download_job = youtube_downloader.DownloadJob(url)
     try:
-        # Check if it's a playlist to start progress tracking
-        if is_playlist_url(url):
-            socketio.emit('download_progress', {
-                'status': 'starting',
-                'message': 'Starting playlist processing...',
-                'current': 0,
-                'total': 0
-            })
-        
-        music_info = download_music(url)
-        
-        # Handle playlist response
-        if 'songs' in music_info:  # This is a playlist
-            playlist_title = music_info['playlist_title']
-            downloaded_songs = music_info['songs']
-            failed_songs = music_info['failed_songs']
-            cancelled = music_info.get('cancelled', False)
-            
-            if cancelled:
-                return jsonify({
-                    'success': True,
-                    'message': f"Playlist download '{playlist_title}' was cancelled. Downloaded {len(downloaded_songs)} songs.",
-                    'cancelled': True
-                })
-            
-            if not downloaded_songs:
-                error_msg = f"Unable to download any songs from playlist '{playlist_title}'"
-                if failed_songs:
-                    error_msg += f". Error: {len(failed_songs)} songs failed"
-                return jsonify({'success': False, 'message': error_msg}), 400
-            
-            # Songs are already added to database during download process
-            # Just count them for response
-            added_songs = [song['title'] for song in downloaded_songs]
-            skipped_songs = []
-            
-            logger.info(f"Playlist processing completed: {len(added_songs)} songs were added during download")
-            
-            # Create response message
-            message_parts = []
-            if added_songs:
-                message_parts.append(f"Added {len(added_songs)} songs from playlist '{playlist_title}'")
-            if skipped_songs:
-                message_parts.append(f"{len(skipped_songs)} songs already exist in playlist")
-            if failed_songs:
-                message_parts.append(f"{len(failed_songs)} songs failed to download")
-            
-            response_message = ". ".join(message_parts)
-            
-            return jsonify({
-                'success': True,
-                'message': response_message,
-                'playlist_info': {
-                    'playlist_title': playlist_title,
-                    'total_tracks': music_info['total_tracks'],
-                    'added_tracks': len(added_songs),
-                    'skipped_tracks': len(skipped_songs),
-                    'failed_tracks': len(failed_songs)
-                }
-            })
-            
-        else:  # This is a single track
-            if not music_info['duration']:
-                return jsonify({'success': False, 'message': 'Could not determine video duration'})
-                
-            with session_scope() as session:
-                # Check if song with same filename already exists
-                existing_song = session.query(Song).filter_by(filename=music_info['filename']).first()
-                if existing_song:
-                    return jsonify({'success': False, 'message': 'This song already exists in the playlist'}), 400
-
-                # Get max position and add 1
-                max_position = session.query(db.func.max(Song.position)).scalar() or -1
-                
-                song = Song(
-                    title=music_info['title'],
-                    filename=music_info['filename'],
-                    source='youtube',
-                    duration=music_info['duration'],
-                    position=max_position + 1
-                )
-                session.add(song)
-                return jsonify({'success': True, 'message': 'Music added successfully'})
-                
+        publish_download_state('starting', 'Đang phân tích link...')
+        socketio.start_background_task(run_download_job, download_job)
     except Exception as e:
-        logger.error(f"Error adding music from URL {url}: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        download_job = None
+        logger.error(f"Could not start download job: {e}")
+        return jsonify({'success': False, 'message': 'Không thể bắt đầu tải'}), 500
+    return jsonify({'success': True, 'queued': True, 'message': 'Đã bắt đầu tải'}), 202
 
 @app.route('/upload-music', methods=['POST'])
 @csrf.exempt
@@ -1975,22 +1650,20 @@ def upload_music():
 @login_required
 @csrf.exempt
 def update_ytdlp_manual():
-    """Manual update yt-dlp and reload the module"""
+    """Upgrade yt-dlp. Downloads run in a child process, so no restart is needed."""
+    global ytdlp_updating
+    if download_job is not None or ytdlp_updating:
+        return jsonify({'success': False, 'message': 'Đang tải nhạc hoặc đang cập nhật, hãy thử lại sau'}), 409
+    ytdlp_updating = True
     try:
         logger.info("Manual yt-dlp update requested")
-        update_ytdlp()
-        
-        # Reload yt_dlp module to use new version without restarting server
-        import importlib
-        import yt_dlp
-        importlib.reload(yt_dlp)
-        logger.info("yt-dlp module reloaded successfully")
-        
-        new_version = get_ytdlp_version()
+        new_version = youtube_downloader.update_ytdlp()
         return jsonify({'success': True, 'message': 'yt-dlp updated successfully', 'version': new_version})
     except Exception as e:
         logger.error(f"Error manually updating yt-dlp: {e}")
         return jsonify({'success': False, 'message': 'Failed to update yt-dlp'}), 500
+    finally:
+        ytdlp_updating = False
 
 
 @app.route('/play/<int:id>', methods=['GET', 'POST'])

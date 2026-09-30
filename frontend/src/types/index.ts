@@ -62,6 +62,7 @@ export interface DownloadState {
   progress: number;
   current_file: string;
   status: string;
+  message: string;
   error: string | null;
   playlist_progress?: {
     current: number;

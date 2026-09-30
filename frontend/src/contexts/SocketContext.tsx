@@ -44,6 +44,7 @@ const defaultDownloadState: DownloadState = {
   progress: 0,
   current_file: '',
   status: '',
+  message: '',
   error: null,
 };
 
@@ -127,18 +128,19 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     });
 
     // Song added
-    socketInstance.on('song_added', (data: { song: Song; songs: Song[] }) => {
-      setSongs(data.songs);
+    socketInstance.on('song_added', (data: { title: string; songs?: Song[] }) => {
+      if (data.songs) setSongs(data.songs);
     });
 
     // Download progress
     socketInstance.on('download_progress', (data: any) => {
       // Map backend download state to frontend format
       setDownloadState({
-        active: data.status !== 'idle' && data.status !== 'completed' && data.status !== 'error',
-        progress: data.current && data.total ? (data.current / data.total) * 100 : 0,
+        active: data.active ?? !['idle', 'completed', 'error', 'cancelled'].includes(data.status),
+        progress: data.percent ?? (data.current && data.total ? (data.current / data.total) * 100 : 0),
         current_file: data.current_song || data.message || '',
         status: data.status || '',
+        message: data.message || '',
         error: data.status === 'error' ? data.message : null,
         playlist_progress: data.total > 1 ? {
           current: data.current || 0,

@@ -11,14 +11,31 @@ A web application for scheduling and playing music automatically on a Raspberry 
 - **Playback controls** — play/pause, stop, seek, volume, shuffle, fade in/out
 - **Android app** — remote control via Tailscale VPN (Capacitor WebView)
 - **Persistent login** — remember token keeps sessions alive for 1 year
-- **Auto-update yt-dlp** — daily update at 1:00 AM
+- **Auto-update yt-dlp** — nightly update at 3:00 AM (skipped while playing or downloading)
 
 ## Requirements
 
-- Raspberry Pi (or any Linux machine)
-- Python 3.7+
+- Raspberry Pi 3B+ or newer (or any Linux machine). **Raspberry Pi OS 64-bit (Bookworm) recommended**
+- Python 3.10+ (3.11 recommended) — current yt-dlp no longer supports older versions
 - FFmpeg
 - pygame (for audio output)
+- A JavaScript runtime for YouTube downloads (see below)
+
+### JavaScript runtime (required for YouTube)
+
+Since late 2025 yt-dlp must run YouTube's JS challenges through an external runtime,
+together with the `yt-dlp-ejs` package (installed by `yt-dlp[default]` in `requirements.txt`).
+
+| `uname -m` | Runtime | Setup |
+|---|---|---|
+| `aarch64` (64-bit OS) | Deno ≥ 2.3 (default) | `curl -fsSL https://deno.land/install.sh \| sh` |
+| `armv7l` (32-bit OS) | Node.js ≥ 22 (Deno has no armv7 build) | install Node 22, then set `YTDLP_JS_RUNTIME=node` in `.env` |
+
+Check it works: `venv/bin/yt-dlp -F "https://www.youtube.com/watch?v=dQw4w9WgXcQ"` must list audio
+formats without a "No supported JavaScript runtime" warning. Make sure the runtime is on the
+`PATH` of the systemd service (see `music-scheduler.service`).
+
+Optional settings live in `.env` — copy `.env.example`.
 
 ## Installation
 
@@ -37,6 +54,7 @@ source venv/bin/activate
 
 # Install Python packages
 pip install -r requirements.txt
+cp .env.example .env   # optional settings
 
 # Run migrations
 python3 migrate_user.py              # Create admin user (save the password!)
@@ -59,7 +77,7 @@ python3 app.py
 ### Production (recommended)
 
 ```bash
-gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:5000 wsgi:application
+gunicorn --worker-class eventlet -w 1 --timeout 120 --bind 0.0.0.0:5000 wsgi:application
 ```
 
 > **Note:** `-w 1` (single worker) is required because pygame audio can only run in one process.
@@ -82,7 +100,9 @@ Access at: `http://<raspberry-pi-ip>:5000`
 ## Project Structure
 
 ```
-├── app.py                  # Main Flask backend (~2300 lines)
+├── app.py                  # Main Flask backend
+├── youtube_downloader.py   # yt-dlp wrapper (runs yt-dlp as a child process)
+├── tests/                  # pytest suite (pip install -r requirements-dev.txt)
 ├── wsgi.py                 # Gunicorn entry point
 ├── requirements.txt        # Python dependencies
 ├── install_service.sh      # Systemd service installer
@@ -116,7 +136,7 @@ Access at: `http://<raspberry-pi-ip>:5000`
 - **SQLAlchemy** + SQLite — database
 - **APScheduler** — cron-like scheduling
 - **pygame** — audio playback
-- **yt-dlp** — YouTube downloads
+- **yt-dlp** — YouTube downloads, run as a low-priority child process so playback never stutters
 - **Flask-WTF** — CSRF protection
 
 ### Frontend
@@ -157,7 +177,11 @@ JAVA_HOME=/path/to/java-21 ./gradlew assembleDebug
 | Issue | Solution |
 |-------|----------|
 | No audio output | Check `alsamixer`, set 3.5mm output (`sudo raspi-config`) |
-| Download errors | `pip install --upgrade yt-dlp` |
+| "Thiếu JS runtime" / no audio formats | Install Deno or Node (see *JavaScript runtime*), check the service `PATH` |
+| "YouTube chặn vì nghi là bot" | Export a cookies file from a secondary account, set `YTDLP_COOKIES_FILE` |
+| Download errors after YouTube changes | Press *Cập nhật* in the yt-dlp card, or `venv/bin/pip install -U "yt-dlp[default]"` |
+| Stuck on an old yt-dlp version | Python < 3.10 — upgrade to Raspberry Pi OS Bookworm |
+| Audio stutters | `journalctl -u music-scheduler \| grep -i underrun`; enable zram on 1GB boards |
 | Forgot password | `python3 migrate_user.py` (generates a new password) |
 | Service not running | `sudo journalctl -u music-scheduler -f` |
 | Database issues | Check files in `instance/` directory |

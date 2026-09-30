@@ -38,7 +38,7 @@ export function AddMusic() {
       setYoutubeUrl('');
     } catch (error: any) {
       console.error('Failed to add from YouTube:', error);
-      addToast('error', error.response?.data?.error || 'Không thể tải nhạc');
+      addToast('error', error.response?.data?.message || error.response?.data?.error || 'Không thể tải nhạc');
     } finally {
       setIsAddingYoutube(false);
     }

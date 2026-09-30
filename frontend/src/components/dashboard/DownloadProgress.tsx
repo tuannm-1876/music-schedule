@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { X, Download } from 'lucide-react';
 import { useSocket } from '@/contexts/SocketContext';
@@ -8,11 +9,21 @@ import { musicApi } from '@/lib/api';
 export function DownloadProgress() {
   const { downloadState } = useSocket();
   const { addToast } = useToast();
+  const lastStatus = useRef('');
+
+  // The banner hides once a job ends, so surface the outcome as a toast
+  useEffect(() => {
+    const { status, message } = downloadState;
+    if (status === lastStatus.current) return;
+    lastStatus.current = status;
+    if (status === 'completed') addToast('success', message || 'Đã tải xong');
+    else if (status === 'error') addToast('error', message || 'Tải nhạc thất bại');
+    else if (status === 'cancelled') addToast('info', message || 'Đã hủy tải xuống');
+  }, [downloadState, addToast]);
 
   const handleCancel = async () => {
     try {
       await musicApi.cancelDownload();
-      addToast('info', 'Đã hủy tải xuống');
     } catch (error) {
       console.error('Failed to cancel download:', error);
       addToast('error', 'Không thể hủy tải xuống');
